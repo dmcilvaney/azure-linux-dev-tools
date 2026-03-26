@@ -207,6 +207,7 @@ func TestQuerySpecSuccess(t *testing.T) {
 			assert.Equal(t, test.expectedSpecInfo.Name, result.Name)
 			assert.Equal(t, test.expectedSpecInfo.Version.String(), result.Version.String())
 			assert.Equal(t, test.expectedSpecInfo.RequiredFiles, result.RequiredFiles)
+			assert.Equal(t, rpm.FormatNEVR(test.expectedSpecInfo.Name, &test.expectedSpecInfo.Version), result.NEVR)
 		})
 	}
 }
@@ -381,4 +382,202 @@ func requireNewVersion(t *testing.T, versionStr string) rpm.Version {
 	require.NoError(t, err)
 
 	return *version
+}
+
+func TestQuerySubpackagesSuccess(t *testing.T) {
+	tests := []struct {
+		name                string
+		buildOptions        rpm.BuildOptions
+		mockOutput          string
+		expectedSubpackages []rpm.PackageNEVR
+	}{
+		{
+			name:         "multi-subpackage output",
+			buildOptions: rpm.BuildOptions{},
+			mockOutput: "pkg_name=curl\npkg_epoch=0\npkg_version=7.88.1\npkg_release=2.azl3\n" +
+				"---\n" +
+				"pkg_name=curl-devel\npkg_epoch=0\npkg_version=7.88.1\npkg_release=2.azl3\n" +
+				"---\n" +
+				"pkg_name=curl-libs\npkg_epoch=0\npkg_version=7.88.1\npkg_release=2.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("curl", requireNewVersion(t, "7.88.1-2.azl3")),
+				rpm.NewPackageNEVR("curl-devel", requireNewVersion(t, "7.88.1-2.azl3")),
+				rpm.NewPackageNEVR("curl-libs", requireNewVersion(t, "7.88.1-2.azl3")),
+			},
+		},
+		{
+			name:         "single-package output",
+			buildOptions: rpm.BuildOptions{},
+			mockOutput: "pkg_name=simple-pkg\npkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("simple-pkg", requireNewVersion(t, "1.0.0-1.azl3")),
+			},
+		},
+		{
+			name:         "non-zero epoch",
+			buildOptions: rpm.BuildOptions{},
+			mockOutput: "pkg_name=vim-enhanced\npkg_epoch=2\npkg_version=9.0.1000\npkg_release=1.azl3\n" +
+				"---\n" +
+				"pkg_name=vim-common\npkg_epoch=2\npkg_version=9.0.1000\npkg_release=1.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("vim-enhanced", requireNewVersion(t, "2:9.0.1000-1.azl3")),
+				rpm.NewPackageNEVR("vim-common", requireNewVersion(t, "2:9.0.1000-1.azl3")),
+			},
+		},
+		{
+			name:         "(none) epoch treated as zero",
+			buildOptions: rpm.BuildOptions{},
+			mockOutput: "pkg_name=test-pkg\npkg_epoch=(none)\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("test-pkg", requireNewVersion(t, "1.0.0-1.azl3")),
+			},
+		},
+		{
+			name:         "output with warnings intermixed",
+			buildOptions: rpm.BuildOptions{},
+			mockOutput: "warning: bogus date in %changelog\n" +
+				"pkg_name=test-pkg\npkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n" +
+				"warning: some other warning\n" +
+				"pkg_name=test-devel\npkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("test-pkg", requireNewVersion(t, "1.0.0-1.azl3")),
+				rpm.NewPackageNEVR("test-devel", requireNewVersion(t, "1.0.0-1.azl3")),
+			},
+		},
+		{
+			name: "with build options",
+			buildOptions: rpm.BuildOptions{
+				With:    []string{"feature1"},
+				Without: []string{"feature2"},
+				Defines: map[string]string{"macro1": "value1"},
+			},
+			mockOutput: "pkg_name=test-pkg\npkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			expectedSubpackages: []rpm.PackageNEVR{
+				rpm.NewPackageNEVR("test-pkg", requireNewVersion(t, "1.0.0-1.azl3")),
+			},
+		},
+		{
+			name:                "empty output returns empty slice",
+			buildOptions:        rpm.BuildOptions{},
+			mockOutput:          "",
+			expectedSubpackages: []rpm.PackageNEVR{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := testctx.NewCtx()
+
+			// Set up the mock filesystem
+			require.NoError(t, ctx.FS().MkdirAll(filepath.Dir(testSpecPath), fileperms.PublicExecutable))
+			require.NoError(t, fileutils.WriteFile(ctx.FS(), testSpecPath, []byte("test spec content"), fileperms.PublicFile))
+
+			var capturedCmd *exec.Cmd
+
+			ctx.CmdFactory.RunAndGetOutputHandler = func(cmd *exec.Cmd) (string, error) {
+				capturedCmd = cmd
+
+				return test.mockOutput, nil
+			}
+
+			buildEnv := buildenv_testutils.NewTestBuildEnv(ctx)
+			querier := rpm.NewSpecQuerier(buildEnv, test.buildOptions)
+
+			result, err := querier.QuerySubpackages(ctx, testSpecPath)
+
+			// Verify command was executed
+			require.NotNil(t, capturedCmd)
+
+			// Verify the command does NOT include --srpm
+			for _, arg := range capturedCmd.Args {
+				assert.NotEqual(t, "--srpm", arg, "binary subpackage query should not use --srpm")
+			}
+
+			// Verify result
+			require.NoError(t, err)
+			assert.Equal(t, test.expectedSubpackages, result)
+
+			if test.expectedSubpackages != nil {
+				for i, expected := range test.expectedSubpackages {
+					assert.Equal(t, expected.Name, result[i].Name)
+					assert.Equal(t, expected.NEVR, result[i].NEVR)
+					assert.Equal(t, expected.Version.Version(), result[i].Version.Version())
+					assert.Equal(t, expected.Version.Release(), result[i].Version.Release())
+					assert.Equal(t, expected.Version.Epoch(), result[i].Version.Epoch())
+				}
+			}
+		})
+	}
+}
+
+func TestQuerySubpackagesFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		mockOutput string
+		mockRunErr error
+	}{
+		{
+			name:       "command execution error",
+			mockOutput: "",
+			mockRunErr: errors.New("command failed"),
+		},
+		{
+			name: "missing name field in block",
+			mockOutput: "pkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			mockRunErr: nil,
+		},
+		{
+			name: "missing version field in block",
+			mockOutput: "pkg_name=test-pkg\npkg_epoch=0\npkg_release=1.azl3\n" +
+				"---\n",
+			mockRunErr: nil,
+		},
+		{
+			name: "missing epoch field in block",
+			mockOutput: "pkg_name=test-pkg\npkg_version=1.0.0\npkg_release=1.azl3\n" +
+				"---\n",
+			mockRunErr: nil,
+		},
+		{
+			name: "missing release field in block",
+			mockOutput: "pkg_name=test-pkg\npkg_epoch=0\npkg_version=1.0.0\n" +
+				"---\n",
+			mockRunErr: nil,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := testctx.NewCtx()
+
+			// Set up the mock filesystem
+			require.NoError(t, ctx.FS().MkdirAll(filepath.Dir(testSpecPath), fileperms.PublicExecutable))
+			require.NoError(t, fileutils.WriteFile(ctx.FS(), testSpecPath, []byte("test spec content"), fileperms.PublicFile))
+
+			ctx.CmdFactory.RunAndGetOutputHandler = func(cmd *exec.Cmd) (string, error) {
+				return test.mockOutput, test.mockRunErr
+			}
+
+			buildEnv := buildenv_testutils.NewTestBuildEnv(ctx)
+			querier := rpm.NewSpecQuerier(buildEnv, rpm.BuildOptions{})
+
+			result, err := querier.QuerySubpackages(ctx, testSpecPath)
+
+			// Verify failure
+			assert.Nil(t, result)
+			require.Error(t, err)
+
+			if test.mockRunErr != nil {
+				assert.Contains(t, err.Error(), "failed to run rpmspec in isolated root to query subpackages")
+			}
+		})
+	}
 }

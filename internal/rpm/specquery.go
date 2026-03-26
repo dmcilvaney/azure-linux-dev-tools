@@ -25,6 +25,8 @@ type SpecQuerier struct {
 type SpecInfo struct {
 	Name          string
 	Version       Version
+	NEVR          string
+	Subpackages   []PackageNEVR
 	RequiredFiles []string
 }
 
@@ -71,6 +73,44 @@ func (q *SpecQuerier) QuerySpec(ctx opctx.Ctx, specPath string) (specInfo *SpecI
 	// Parse the output from rpmspec. Note that we'll need to be careful to ignore warnings and errors
 	// intermixed with intentional output.
 	return parseRpmspecOutput(specPath, output)
+}
+
+// subpackageSeparator is the delimiter used between subpackage entries in rpmspec binary query output.
+const subpackageSeparator = "---"
+
+// QuerySubpackages queries the given spec file for all binary subpackages it produces,
+// returning the [PackageNEVR] for each subpackage. This runs rpmspec without --srpm to enumerate
+// all binary packages defined in the spec.
+func (q *SpecQuerier) QuerySubpackages(ctx opctx.Ctx, specPath string) ([]PackageNEVR, error) {
+	const specDirPathInBuildEnv = "/spec"
+
+	// Bind-mount the spec's dir into a known dir.
+	buildEnvOpts := &buildenv.RunOptions{}
+	buildEnvOpts.BindMounts = append(buildEnvOpts.BindMounts, buildenv.BindMount{
+		PathInHost:     filepath.Dir(specPath),
+		PathInBuildEnv: specDirPathInBuildEnv,
+	})
+
+	// Compose the rpmspec command line for binary packages (no --srpm).
+	specPathInMockRoot := path.Join(specDirPathInBuildEnv, filepath.Base(specPath))
+	rpmspecCmdline := q.composeBinaryRpmspecCmdline(specPathInMockRoot)
+
+	// Run rpmspec and capture its output.
+	output, err := runInBuildEnvAndGetOutput(ctx, q.buildEnv, buildEnvOpts, rpmspecCmdline)
+	if err != nil {
+		for _, stdoutLine := range strings.Split(output, "\n") {
+			stdoutLine = strings.TrimSpace(stdoutLine)
+
+			if strings.HasPrefix(stdoutLine, "error:") || strings.HasPrefix(stdoutLine, "warning:") {
+				slog.Error("error parsing spec for subpackages", "error", stdoutLine, "specPath", specPath)
+			}
+		}
+
+		return nil, fmt.Errorf("failed to run rpmspec in isolated root to query subpackages for spec %#q:\n%w",
+			specPath, err)
+	}
+
+	return parseBinaryRpmspecOutput(specPath, output)
 }
 
 func runInBuildEnvAndGetOutput(
@@ -184,6 +224,115 @@ func parseRpmspecOutput(specPath, output string) (specInfo *SpecInfo, err error)
 	return &SpecInfo{
 		Name:          name,
 		Version:       *versionObject,
+		NEVR:          FormatNEVR(name, versionObject),
 		RequiredFiles: requiredFiles,
 	}, nil
+}
+
+func (q *SpecQuerier) composeBinaryRpmspecCmdline(specPath string) (result []string) {
+	specDirPath := filepath.Dir(specPath)
+
+	// Compose command without --srpm to query all binary subpackages.
+	// Use a separator to delimit subpackage boundaries in output.
+	result = []string{
+		"rpmspec",
+		"-q",
+		"-D", "_sourcedir " + specDirPath,
+		"-D", "_specdir " + specDirPath,
+		"-D", "with_check 0",
+		"--queryformat",
+		"pkg_name=%{name}\npkg_epoch=%{epoch}\npkg_version=%{version}\npkg_release=%{release}\n" +
+			subpackageSeparator + "\n",
+	}
+
+	for _, name := range q.buildOptions.With {
+		result = append(result, "--with", name)
+	}
+
+	for _, name := range q.buildOptions.Without {
+		result = append(result, "--without", name)
+	}
+
+	for key, value := range q.buildOptions.Defines {
+		result = append(result, "-D", fmt.Sprintf("%s %s", key, value))
+	}
+
+	result = append(result, specPath)
+
+	return result
+}
+
+func parseBinaryRpmspecOutput(specPath, output string) ([]PackageNEVR, error) {
+	// Split the output into blocks separated by the subpackage separator.
+	blocks := strings.Split(output, subpackageSeparator)
+	subpackages := make([]PackageNEVR, 0, len(blocks))
+
+	for _, block := range blocks {
+		pkg, isEmpty, err := parseSubpackageBlock(specPath, block)
+		if err != nil {
+			return nil, err
+		}
+
+		if isEmpty {
+			continue
+		}
+
+		subpackages = append(subpackages, *pkg)
+	}
+
+	return subpackages, nil
+}
+
+//nolint:cyclop // This function's complexity is due to the if/else-if cases for parsing, mirroring parseRpmspecOutput.
+func parseSubpackageBlock(specPath, block string) (pkg *PackageNEVR, isEmpty bool, err error) {
+	var name, epoch, version, release string
+
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// Ignore rpmspec warnings/errors intermixed with output.
+		//nolint:nestif // Mirrors the structure in parseRpmspecOutput for consistency.
+		if strings.HasPrefix(trimmed, "error: ") || strings.HasPrefix(trimmed, "warning: ") {
+			slog.Debug("Ignoring rpmspec error in subpackage output", "line", trimmed)
+		} else if after, ok := strings.CutPrefix(trimmed, "pkg_name="); ok {
+			name = after
+		} else if after, ok := strings.CutPrefix(trimmed, "pkg_epoch="); ok {
+			if after == "(none)" {
+				epoch = "0"
+			} else {
+				epoch = after
+			}
+		} else if after, ok := strings.CutPrefix(trimmed, "pkg_version="); ok {
+			version = after
+		} else if after, ok := strings.CutPrefix(trimmed, "pkg_release="); ok {
+			release = after
+		} else {
+			slog.Debug("Ignoring unexpected line in subpackage output", "line", trimmed)
+		}
+	}
+
+	// Skip empty blocks (e.g., trailing separator).
+	if name == "" && epoch == "" && version == "" && release == "" {
+		return nil, true, nil
+	}
+
+	if name == "" || epoch == "" || version == "" || release == "" {
+		return nil, false, fmt.Errorf(
+			"failed to parse subpackage from spec %#q: "+
+				"missing required fields (name: %q, epoch: %q, version: %q, release: %q)",
+			specPath, name, epoch, version, release,
+		)
+	}
+
+	versionObject, err := NewVersionFromEVR(epoch, version, release)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create version for subpackage %#q:\n%w", name, err)
+	}
+
+	result := NewPackageNEVR(name, *versionObject)
+
+	return &result, false, nil
 }
