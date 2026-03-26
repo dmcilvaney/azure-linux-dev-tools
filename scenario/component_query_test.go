@@ -71,4 +71,126 @@ func TestQueryingAComponent(t *testing.T) {
 	subpackages, ok := componentOutput["subpackages"].([]interface{})
 	require.True(t, ok, "subpackages field is not an array")
 	require.NotEmpty(t, subpackages, "Expected at least one subpackage")
+
+	// Validate SRPM NEVR.
+	require.Contains(t, srpm, "nevr")
+	assert.Equal(t, spec.GetExpectedNEVR(), srpm["nevr"], "Expected SRPM NEVR to match")
+
+	// Validate subpackage NEVR.
+	subpkg, ok := subpackages[0].(map[string]interface{})
+	require.True(t, ok, "subpackage is not a map")
+	require.Contains(t, subpkg, "nevr")
+	assert.Equal(t, spec.GetExpectedNEVR(), subpkg["nevr"], "Expected subpackage NEVR to match")
+}
+
+// Test that component query returns correct NEVRs for a multi-subpackage component.
+func TestQueryingMultiSubpackageComponent(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping long test")
+	}
+
+	spec := projecttest.NewSpec(
+		projecttest.WithName("multi-pkg"),
+		projecttest.WithVersion("2.0.0"),
+		projecttest.WithRelease("1.rel"),
+		projecttest.WithSubpackage("devel"),
+		projecttest.WithSubpackage("libs"),
+	)
+
+	project := projecttest.NewDynamicTestProject(
+		projecttest.AddSpec(spec),
+		projecttest.UseTestDefaultConfigs(),
+	)
+
+	results := projecttest.NewProjectTest(
+		project,
+		[]string{"component", "query", spec.GetName()},
+		projecttest.WithTestDefaultConfigs(),
+	).RunInContainer(t)
+
+	output := results.GetJSONResult()
+	require.Len(t, output, 1, "Expected one component in the output")
+
+	comp := output[0]
+
+	// Validate SRPM NEVR.
+	srpm, ok := comp["srpm"].(map[string]interface{})
+	require.True(t, ok, "srpm field is not a map")
+	assert.Equal(t, spec.GetExpectedNEVR(), srpm["nevr"], "SRPM NEVR mismatch")
+
+	// Validate subpackages: base + devel + libs = 3.
+	subpackages, ok := comp["subpackages"].([]interface{})
+	require.True(t, ok, "subpackages field is not an array")
+	require.Len(t, subpackages, 3, "Expected 3 subpackages: base, devel, libs")
+
+	// Build a map of subpackage name → NEVR for validation.
+	subpkgNEVRs := make(map[string]string)
+
+	for _, sp := range subpackages {
+		spMap, ok := sp.(map[string]interface{})
+		require.True(t, ok, "subpackage entry is not a map")
+
+		name, ok := spMap["name"].(string)
+		require.True(t, ok, "subpackage name is not a string")
+
+		nevr, ok := spMap["nevr"].(string)
+		require.True(t, ok, "subpackage nevr is not a string")
+
+		subpkgNEVRs[name] = nevr
+	}
+
+	assert.Equal(t, spec.GetExpectedNEVR(), subpkgNEVRs["multi-pkg"],
+		"Base package NEVR mismatch")
+	assert.Equal(t, spec.GetExpectedSubpackageNEVR("devel"), subpkgNEVRs["multi-pkg-devel"],
+		"Devel package NEVR mismatch")
+	assert.Equal(t, spec.GetExpectedSubpackageNEVR("libs"), subpkgNEVRs["multi-pkg-libs"],
+		"Libs package NEVR mismatch")
+}
+
+// Test that component query returns correct NEVRs when epoch is non-zero.
+func TestQueryingComponentWithEpoch(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping long test")
+	}
+
+	spec := projecttest.NewSpec(
+		projecttest.WithName("epoch-pkg"),
+		projecttest.WithVersion("1.0.0"),
+		projecttest.WithRelease("1.rel"),
+		projecttest.WithEpoch("3"),
+	)
+
+	project := projecttest.NewDynamicTestProject(
+		projecttest.AddSpec(spec),
+		projecttest.UseTestDefaultConfigs(),
+	)
+
+	results := projecttest.NewProjectTest(
+		project,
+		[]string{"component", "query", spec.GetName()},
+		projecttest.WithTestDefaultConfigs(),
+	).RunInContainer(t)
+
+	output := results.GetJSONResult()
+	require.Len(t, output, 1, "Expected one component in the output")
+
+	comp := output[0]
+
+	// Validate SRPM NEVR includes epoch.
+	srpm, ok := comp["srpm"].(map[string]interface{})
+	require.True(t, ok, "srpm field is not a map")
+	assert.Equal(t, spec.GetExpectedNEVR(), srpm["nevr"], "SRPM NEVR should include epoch")
+
+	// Validate subpackage NEVR includes epoch.
+	subpackages, ok := comp["subpackages"].([]interface{})
+	require.True(t, ok, "subpackages field is not an array")
+	require.Len(t, subpackages, 1)
+
+	subpkg, ok := subpackages[0].(map[string]interface{})
+	require.True(t, ok, "subpackage is not a map")
+	assert.Equal(t, spec.GetExpectedNEVR(), subpkg["nevr"], "Subpackage NEVR should include epoch")
 }
