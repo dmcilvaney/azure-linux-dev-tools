@@ -13,6 +13,12 @@ upstream sources and parses the RPM spec to report version, release,
 subpackages, dependencies, and other spec-level details. This makes it
 slower than 'list' but more informative.
 
+By default, the query first attempts a fast spec-directory-only parse. If
+rpmspec fails (e.g., due to unresolvable macros or missing source files),
+it automatically falls back to full source preparation — downloading
+archives and applying overlays — before re-querying. Use --local-only to
+disable this fallback and fail immediately on spec-only parse errors.
+
 ```
 azldev component query [flags]
 ```
@@ -25,6 +31,9 @@ azldev component query [flags]
 
   # Query with JSON output
   azldev component query -p bash -q -O json
+
+  # Query without source fallback (spec-directory only)
+  azldev component query -p curl --local-only
 ```
 
 ### Options
@@ -34,6 +43,7 @@ azldev component query [flags]
   -p, --component stringArray         Component name pattern
   -g, --component-group stringArray   Component group name
   -h, --help                          help for query
+      --local-only                    skip automatic source-preparation fallback; fail immediately if spec-only parsing fails
   -s, --spec-path stringArray         Spec path
 ```
 

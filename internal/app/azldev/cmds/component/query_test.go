@@ -6,6 +6,7 @@ package component_test
 import (
 	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/cmds/component"
@@ -62,11 +63,17 @@ func TestQueryComponents_OneComponent(t *testing.T) {
 	// Pretend mock is present.
 	testEnv.CmdFactory.RegisterCommandInSearchPath(mock.MockBinary)
 
-	// Mock the rpmspec command to return valid output
+	// Mock the rpmspec command to return valid output.
 	// NOTE: This takes a dependency on knowing how rpmspec gets invoked.
+	// The first call uses --srpm for SRPM info; the second call omits it for binary subpackages.
 	testEnv.CmdFactory.RunAndGetOutputHandler = func(cmd *exec.Cmd) (string, error) {
-		// Return mock rpmspec output in the expected format: name|epoch|version|release
-		return "name=test-component\nepoch=0\nversion=1.0.0\nrelease=1.azl3\n", nil
+		for _, arg := range cmd.Args {
+			if strings.Contains(arg, "--srpm") {
+				return "name=test-component\nepoch=0\nversion=1.0.0\nrelease=1.azl3\n", nil
+			}
+		}
+
+		return "pkg_name=test-component\npkg_epoch=0\npkg_version=1.0.0\npkg_release=1.azl3\n---\n", nil
 	}
 
 	options := component.QueryComponentsOptions{
@@ -84,7 +91,11 @@ func TestQueryComponents_OneComponent(t *testing.T) {
 	require.Len(t, results, 1)
 
 	result := results[0]
+	assert.Equal(t, testComponentName, result.ComponentName)
 	assert.Equal(t, testComponentName, result.Name)
+	assert.Equal(t, "test-component-1.0.0-1.azl3", result.NEVR)
+	require.Len(t, result.Subpackages, 1)
+	assert.Equal(t, testComponentName, result.Subpackages[0].Name)
 }
 
 func TestQueryComponents_LocalOnlyFailsWithoutFallback(t *testing.T) {

@@ -48,17 +48,27 @@ func TestQueryingAComponent(t *testing.T) {
 	require.Len(t, output, 1, "Expected one component in the output")
 	componentOutput := output[0]
 
-	// Check for name.
-	require.Contains(t, componentOutput, "Name")
-	assert.Equal(t, spec.GetName(), componentOutput["Name"], "Expected component name to match")
+	// Check for component name.
+	require.Contains(t, componentOutput, "component")
+	assert.Equal(t, spec.GetName(), componentOutput["component"], "Expected component name to match")
 
-	// Check for EVR structure.
-	require.Contains(t, componentOutput, "Version")
-	version := componentOutput["Version"]
+	// Check for SRPM structure.
+	require.Contains(t, componentOutput, "srpm")
+	srpm, ok := componentOutput["srpm"].(map[string]interface{})
+	require.True(t, ok, "srpm field is not a map")
+	require.Contains(t, srpm, "name")
+	assert.Equal(t, spec.GetName(), srpm["name"], "Expected SRPM name to match")
 
-	// Check for version sub-field.
-	versionMap, ok := version.(map[string]interface{})
-	require.True(t, ok, "Version field is not a map")
+	// Check for version within SRPM.
+	require.Contains(t, srpm, "version")
+	versionMap, ok := srpm["version"].(map[string]interface{})
+	require.True(t, ok, "version field is not a map")
 	require.Contains(t, versionMap, "Version")
 	assert.Equal(t, spec.GetVersion(), versionMap["Version"])
+
+	// Check subpackages exist.
+	require.Contains(t, componentOutput, "subpackages")
+	subpackages, ok := componentOutput["subpackages"].([]interface{})
+	require.True(t, ok, "subpackages field is not an array")
+	require.NotEmpty(t, subpackages, "Expected at least one subpackage")
 }

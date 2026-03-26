@@ -12,6 +12,7 @@ import (
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/sources"
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/specs"
 	"github.com/microsoft/azure-linux-dev-tools/internal/providers/sourceproviders"
+	"github.com/microsoft/azure-linux-dev-tools/internal/rpm"
 	"github.com/microsoft/azure-linux-dev-tools/internal/utils/fileutils"
 	"github.com/spf13/cobra"
 )
@@ -59,7 +60,16 @@ disable this fallback and fail immediately on spec-only parse errors.`,
 		RunE: azldev.RunFuncWithExtraArgs(func(env *azldev.Env, args []string) (interface{}, error) {
 			options.ComponentFilter.ComponentNamePatterns = append(args, options.ComponentFilter.ComponentNamePatterns...)
 
-			return QueryComponents(env, options)
+			results, err := QueryComponents(env, options)
+			if err != nil {
+				return nil, err
+			}
+
+			if env.DefaultReportFormat() == azldev.ReportFormatJSON {
+				return toJSONResults(results), nil
+			}
+
+			return toTableRows(results), nil
 		}),
 		ValidArgsFunction: components.GenerateComponentNameCompletions,
 	}
@@ -73,7 +83,23 @@ disable this fallback and fail immediately on spec-only parse errors.`,
 
 // componentDetails encapsulates detailed information about a component.
 type componentDetails struct {
+	ComponentName string
 	specs.ComponentSpecDetails
+}
+
+// componentQueryRow is the flat row structure for table/CSV/markdown output,
+// showing one row per subpackage.
+type componentQueryRow struct {
+	Component string `json:"component" table:",sortkey"`
+	Package   string `json:"package"`
+	NEVR      string `json:"nevr"`
+}
+
+// componentQueryJSONResult is the nested structure for JSON output.
+type componentQueryJSONResult struct {
+	Component   string            `json:"component"`
+	SRPM        rpm.PackageNEVR   `json:"srpm"`
+	Subpackages []rpm.PackageNEVR `json:"subpackages"`
 }
 
 // Queries env for component details, in accordance with options. Returns the found components.
@@ -107,6 +133,7 @@ func QueryComponents(
 		}
 
 		details := &componentDetails{
+			ComponentName:        comp.GetName(),
 			ComponentSpecDetails: *specInfo,
 		}
 
@@ -167,4 +194,43 @@ func queryWithSourceFallback(
 	}
 
 	return specInfo, nil
+}
+
+// toTableRows transforms component details into flat rows for table/CSV/markdown output.
+// Each component produces one SRPM row plus one row per binary subpackage.
+func toTableRows(details []*componentDetails) []*componentQueryRow {
+	rows := make([]*componentQueryRow, 0)
+
+	for _, detail := range details {
+		rows = append(rows, &componentQueryRow{
+			Component: detail.ComponentName,
+			Package:   detail.Name + " (srpm)",
+			NEVR:      detail.NEVR,
+		})
+
+		for i := range detail.Subpackages {
+			rows = append(rows, &componentQueryRow{
+				Component: detail.ComponentName,
+				Package:   detail.Subpackages[i].Name,
+				NEVR:      detail.Subpackages[i].NEVR,
+			})
+		}
+	}
+
+	return rows
+}
+
+// toJSONResults transforms component details into the nested JSON output structure.
+func toJSONResults(details []*componentDetails) []*componentQueryJSONResult {
+	results := make([]*componentQueryJSONResult, 0, len(details))
+
+	for _, detail := range details {
+		results = append(results, &componentQueryJSONResult{
+			Component:   detail.ComponentName,
+			SRPM:        rpm.NewPackageNEVR(detail.Name, detail.Version),
+			Subpackages: detail.Subpackages,
+		})
+	}
+
+	return results
 }

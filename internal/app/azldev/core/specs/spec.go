@@ -126,10 +126,20 @@ func (s *componentSpec) parseSpecAt(specPath string) (specInfo *ComponentSpecDet
 	}
 
 	// Create the spec querier and query it!
-	queriedSpecInfo, err := rpm.NewSpecQuerier(buildEnv, buildOptions).QuerySpec(s.env, specPath)
+	querier := rpm.NewSpecQuerier(buildEnv, buildOptions)
+
+	queriedSpecInfo, err := querier.QuerySpec(s.env, specPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query spec for component %q:\n%w", s.componentConfig.Name, err)
 	}
+
+	// Also query binary subpackages produced by the spec.
+	subpackages, err := querier.QuerySubpackages(s.env, specPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query subpackages for component %q:\n%w", s.componentConfig.Name, err)
+	}
+
+	queriedSpecInfo.Subpackages = subpackages
 
 	return &ComponentSpecDetails{
 		SpecInfo: *queriedSpecInfo,
