@@ -43,6 +43,10 @@ func (s *testComponentSpec) Parse() (*specs.ComponentSpecDetails, error) {
 	return nil, errors.New("not implemented")
 }
 
+func (s *testComponentSpec) ParseFromDir(_ string) (*specs.ComponentSpecDetails, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (s *testComponentSpec) GetPath() (string, error) {
 	return s.path, nil
 }

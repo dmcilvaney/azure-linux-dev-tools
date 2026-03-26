@@ -22,6 +22,12 @@ type ComponentSpec interface {
 	// isolated environment set up to match the component's configuration. Note that this function
 	// may be computationally intensive and/or time-consuming.
 	Parse() (specInfo *ComponentSpecDetails, err error)
+	// ParseFromDir parses the spec found in the given directory. Unlike [Parse], which uses only
+	// the configured spec path, this method bind-mounts the entire sourcesDir into the build
+	// environment so that source archives, patches, and other files are visible to rpmspec.
+	// This is useful as a fallback when spec-only parsing fails due to unresolvable macros or
+	// missing source files.
+	ParseFromDir(sourcesDir string) (specInfo *ComponentSpecDetails, err error)
 	// GetPath ensures that the spec is locally available, and then provides a path to it. Invoking this
 	// function may fail if an error occurs while preparing the spec for local access.
 	GetPath() (path string, err error)
@@ -66,13 +72,33 @@ func (s *componentSpec) GetPath() (path string, err error) {
 	return s.componentConfig.Spec.Path, nil
 }
 
-func (s *componentSpec) Parse() (specInfo *ComponentSpecDetails, err error) {
+func (s *componentSpec) Parse() (*ComponentSpecDetails, error) {
 	// Make sure we can get a specPath to a locally-accessible spec file first.
 	specPath, err := s.GetPath()
 	if err != nil {
 		return nil, err
 	}
 
+	return s.parseSpecAt(specPath)
+}
+
+func (s *componentSpec) ParseFromDir(sourcesDir string) (*ComponentSpecDetails, error) {
+	specPath := filepath.Join(sourcesDir, s.componentConfig.Name+".spec")
+
+	// Verify that the spec file exists in the sources directory.
+	if _, err := s.env.FS().Stat(specPath); err != nil {
+		return nil, fmt.Errorf("spec file for component %#q not found in sources dir %#q:\n%w",
+			s.componentConfig.Name, sourcesDir, err)
+	}
+
+	return s.parseSpecAt(specPath)
+}
+
+// parseSpecAt is the shared implementation for [Parse] and [ParseFromDir]. It creates an isolated
+// build environment and runs rpmspec against the spec at the given path. The directory containing
+// specPath is bind-mounted into the build environment, so all sibling files (sources, patches)
+// are visible to rpmspec.
+func (s *componentSpec) parseSpecAt(specPath string) (specInfo *ComponentSpecDetails, err error) {
 	evt := s.env.StartEvent(fmt.Sprintf("Querying spec %q in isolated environment...", filepath.Base(specPath)))
 	defer evt.End()
 

@@ -73,3 +73,18 @@ func (mr *MockComponentSpecMockRecorder) Parse() *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Parse", reflect.TypeOf((*MockComponentSpec)(nil).Parse))
 }
+
+// ParseFromDir mocks base method.
+func (m *MockComponentSpec) ParseFromDir(sourcesDir string) (*specs.ComponentSpecDetails, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ParseFromDir", sourcesDir)
+	ret0, _ := ret[0].(*specs.ComponentSpecDetails)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ParseFromDir indicates an expected call of ParseFromDir.
+func (mr *MockComponentSpecMockRecorder) ParseFromDir(sourcesDir any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ParseFromDir", reflect.TypeOf((*MockComponentSpec)(nil).ParseFromDir), sourcesDir)
+}

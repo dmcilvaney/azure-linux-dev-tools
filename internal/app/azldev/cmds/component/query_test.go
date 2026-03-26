@@ -4,6 +4,7 @@
 package component_test
 
 import (
+	"errors"
 	"os/exec"
 	"testing"
 
@@ -22,6 +23,11 @@ func TestNewComponentQueryCommand(t *testing.T) {
 	cmd := component.NewComponentQueryCommand()
 	require.NotNil(t, cmd)
 	assert.Equal(t, "query", cmd.Use)
+
+	// Verify --local-only flag is registered.
+	localOnlyFlag := cmd.Flags().Lookup("local-only")
+	require.NotNil(t, localOnlyFlag, "--local-only flag should be registered")
+	assert.Equal(t, "false", localOnlyFlag.DefValue)
 }
 
 func TestComponentQueryCmd_NoMatch(t *testing.T) {
@@ -79,4 +85,44 @@ func TestQueryComponents_OneComponent(t *testing.T) {
 
 	result := results[0]
 	assert.Equal(t, testComponentName, result.Name)
+}
+
+func TestQueryComponents_LocalOnlyFailsWithoutFallback(t *testing.T) {
+	const (
+		testComponentName = "test-component"
+		testSpecPath      = "/path/to/spec"
+	)
+
+	testEnv := testutils.NewTestEnv(t)
+	testEnv.Config.Components[testComponentName] = projectconfig.ComponentConfig{
+		Name: testComponentName,
+		Spec: projectconfig.SpecSource{
+			SourceType: projectconfig.SpecSourceTypeLocal,
+			Path:       testSpecPath,
+		},
+	}
+
+	// Pretend mock is present.
+	testEnv.CmdFactory.RegisterCommandInSearchPath(mock.MockBinary)
+
+	// Mock the rpmspec command to return an error (simulating unresolvable macros).
+	testEnv.CmdFactory.RunAndGetOutputHandler = func(cmd *exec.Cmd) (string, error) {
+		return "error: failed to resolve macros", errors.New("rpmspec failed")
+	}
+
+	options := component.QueryComponentsOptions{
+		ComponentFilter: components.ComponentFilter{
+			ComponentNamePatterns: []string{testComponentName},
+		},
+		LocalOnly: true,
+	}
+
+	// Simulate the spec file existing.
+	err := fileutils.WriteFile(testEnv.FS(), testSpecPath, []byte("test spec content"), fileperms.PublicFile)
+	require.NoError(t, err)
+
+	// With --local-only, the query should fail without attempting source fallback.
+	_, err = component.QueryComponents(testEnv.Env, &options)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse spec for component")
 }
