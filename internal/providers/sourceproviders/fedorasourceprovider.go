@@ -221,64 +221,80 @@ func (g *FedoraSourcesProviderImpl) renameSpecIfNeeded(dir, upstreamName, compon
 	return nil
 }
 
-// checkoutTargetCommit determines the appropriate commit to use and checks it out.
-// Priority order:
-//  1. Explicit upstream commit hash - specified per-component via upstream-commit
-//  2. Upstream distro snapshot - snapshot time from the provider's resolved distro
-//  3. Default - use current HEAD (no checkout needed)
+// checkoutTargetCommit resolves the effective commit via [resolveEffectiveCommitHash]
+// and checks it out in the cloned repository.
 func (g *FedoraSourcesProviderImpl) checkoutTargetCommit(
 	ctx context.Context,
 	upstreamCommit string,
 	repoDir string,
 ) error {
-	// Case 1: Explicit upstream commit hash specified per-component
-	if upstreamCommit != "" {
-		slog.Info("Using explicit upstream commit hash",
-			"commitHash", upstreamCommit)
-
-		if err := g.gitProvider.Checkout(ctx, repoDir, upstreamCommit); err != nil {
-			return fmt.Errorf("failed to checkout upstream commit %#q:\n%w", upstreamCommit, err)
-		}
-
-		return nil
+	commitHash, err := g.resolveEffectiveCommitHash(ctx, repoDir, upstreamCommit, slog.LevelInfo)
+	if err != nil {
+		return err
 	}
 
-	// Case 2: Provider has a snapshot time configured from the resolved distro
-	if g.snapshotTime != "" {
-		snapshotDateTime, err := time.Parse(time.RFC3339, g.snapshotTime)
-		if err != nil {
-			return fmt.Errorf("invalid snapshot time %#q:\n%w", g.snapshotTime, err)
-		}
-
-		commitHash, err := g.gitProvider.GetCommitHashBeforeDate(ctx, repoDir, snapshotDateTime)
-		if err != nil {
-			return fmt.Errorf("failed to get commit hash for snapshot time %s:\n%w",
-				snapshotDateTime.Format(time.RFC3339), err)
-		}
-
-		slog.Info("Using upstream distro snapshot time",
-			"snapshotDateTime", snapshotDateTime.Format(time.RFC3339),
-			"commitHash", commitHash)
-
-		if err := g.gitProvider.Checkout(ctx, repoDir, commitHash); err != nil {
-			return fmt.Errorf("failed to checkout snapshot commit %#q:\n%w", commitHash, err)
-		}
-
-		return nil
+	if err := g.gitProvider.Checkout(ctx, repoDir, commitHash); err != nil {
+		return fmt.Errorf("failed to checkout commit %#q:\n%w", commitHash, err)
 	}
-
-	// Case 3: Default - use current HEAD (already checked out by clone)
-	slog.Info("Using current HEAD (no snapshot time configured)")
 
 	return nil
 }
 
+// resolveEffectiveCommitHash is the single source of truth for which commit a
+// component should use from a cloned repository.
+//
+// Priority:
+//  1. Explicit upstream commit hash (pinned per-component).
+//  2. Snapshot time — commit immediately before the snapshot date.
+//  3. Default — current HEAD.
+func (g *FedoraSourcesProviderImpl) resolveEffectiveCommitHash(
+	ctx context.Context,
+	repoDir string,
+	upstreamCommit string,
+	logLevel slog.Level,
+) (string, error) {
+	// Case 1: Explicit upstream commit hash specified per-component.
+	if upstreamCommit != "" {
+		slog.Log(ctx, logLevel, "Using explicit upstream commit hash", "commitHash", upstreamCommit)
+
+		return upstreamCommit, nil
+	}
+
+	// Case 2: Provider has a snapshot time configured from the resolved distro.
+	if g.snapshotTime != "" {
+		snapshotDateTime, err := time.Parse(time.RFC3339, g.snapshotTime)
+		if err != nil {
+			return "", fmt.Errorf("invalid snapshot time %#q:\n%w", g.snapshotTime, err)
+		}
+
+		commitHash, err := g.gitProvider.GetCommitHashBeforeDate(ctx, repoDir, snapshotDateTime)
+		if err != nil {
+			return "", fmt.Errorf("resolving commit for snapshot time %s:\n%w",
+				snapshotDateTime.Format(time.RFC3339), err)
+		}
+
+		slog.Log(ctx, logLevel, "Using upstream distro snapshot time",
+			"snapshotDateTime", snapshotDateTime.Format(time.RFC3339),
+			"commitHash", commitHash)
+
+		return commitHash, nil
+	}
+
+	// Case 3: Default — use current HEAD.
+	commitHash, err := g.gitProvider.GetCurrentCommit(ctx, repoDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving current HEAD commit:\n%w", err)
+	}
+
+	slog.Log(ctx, logLevel, "Using current HEAD", "commitHash", commitHash)
+
+	return commitHash, nil
+}
+
 // ResolveSourceIdentity implements [SourceIdentityProvider] by resolving the upstream
-// commit hash for the component. Resolution priority matches [checkoutTargetCommit]:
-//  1. Explicit upstream commit hash (pinned per-component) — returned directly.
-//  2. Snapshot time — perform a metadata-only clone of the dist-git branch and use the
-//     local git history to find the commit immediately before the snapshot date.
-//  3. Default — perform a metadata-only clone of the dist-git branch and use its current HEAD.
+// commit hash for the component. Resolution priority is defined by
+// [resolveEffectiveCommitHash]. Cases 2 and 3 require a metadata-only clone of the
+// dist-git branch; case 1 (pinned commit) is returned directly without a network call.
 func (g *FedoraSourcesProviderImpl) ResolveSourceIdentity(
 	ctx context.Context,
 	component components.Component,
@@ -307,8 +323,8 @@ func (g *FedoraSourcesProviderImpl) ResolveSourceIdentity(
 	return g.resolveCommit(ctx, gitRepoURL, upstreamName)
 }
 
-// resolveCommit clones the branch and determines the effective commit, either
-// at the snapshot time, or at the latest commit if no snapshot time is configured.
+// resolveCommit clones the branch and determines the effective commit via
+// [resolveEffectiveCommitHash].
 func (g *FedoraSourcesProviderImpl) resolveCommit(
 	ctx context.Context, gitRepoURL string, upstreamName string,
 ) (string, error) {
@@ -341,30 +357,12 @@ func (g *FedoraSourcesProviderImpl) resolveCommit(
 		return "", fmt.Errorf("partial clone for identity of %#q:\n%w", upstreamName, err)
 	}
 
-	var commitHash string
-
-	if g.snapshotTime != "" {
-		snapshotDateTime, parseErr := time.Parse(time.RFC3339, g.snapshotTime)
-		if parseErr != nil {
-			return "", fmt.Errorf("invalid snapshot time %#q:\n%w", g.snapshotTime, parseErr)
-		}
-
-		commitHash, err = g.gitProvider.GetCommitHashBeforeDate(ctx, tempDir, snapshotDateTime)
-		if err != nil {
-			return "", fmt.Errorf("resolving snapshot commit for %#q at %s:\n%w",
-				upstreamName, snapshotDateTime.Format(time.RFC3339), err)
-		}
-	} else {
-		commitHash, err = g.gitProvider.GetCurrentCommit(ctx, tempDir)
-		if err != nil {
-			return "", fmt.Errorf("resolving current commit for %#q:\n%w", upstreamName, err)
-		}
+	// upstreamCommit is "" here — the pinned-commit case is handled by the
+	// caller (ResolveSourceIdentity) before cloning.
+	commitHash, err := g.resolveEffectiveCommitHash(ctx, tempDir, "", slog.LevelDebug)
+	if err != nil {
+		return "", fmt.Errorf("resolving commit for %#q:\n%w", upstreamName, err)
 	}
-
-	slog.Debug("Resolved snapshot commit for identity",
-		"component", upstreamName,
-		"snapshot", g.snapshotTime,
-		"commit", commitHash)
 
 	return commitHash, nil
 }
