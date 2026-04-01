@@ -291,11 +291,11 @@ func (g *FedoraSourcesProviderImpl) resolveEffectiveCommitHash(
 	return commitHash, nil
 }
 
-// ResolveSourceIdentity implements [SourceIdentityProvider] by resolving the upstream
+// ResolveIdentity implements [SourceIdentityProvider] by resolving the upstream
 // commit hash for the component. Resolution priority is defined by
 // [resolveEffectiveCommitHash]. Cases 2 and 3 require a metadata-only clone of the
 // dist-git branch; case 1 (pinned commit) is returned directly without a network call.
-func (g *FedoraSourcesProviderImpl) ResolveSourceIdentity(
+func (g *FedoraSourcesProviderImpl) ResolveIdentity(
 	ctx context.Context,
 	component components.Component,
 ) (string, error) {
@@ -358,7 +358,7 @@ func (g *FedoraSourcesProviderImpl) resolveCommit(
 	}
 
 	// upstreamCommit is "" here — the pinned-commit case is handled by the
-	// caller (ResolveSourceIdentity) before cloning.
+	// caller (ResolveIdentity) before cloning.
 	commitHash, err := g.resolveEffectiveCommitHash(ctx, tempDir, "", slog.LevelDebug)
 	if err != nil {
 		return "", fmt.Errorf("resolving commit for %#q:\n%w", upstreamName, err)
