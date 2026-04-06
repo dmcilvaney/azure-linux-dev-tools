@@ -175,3 +175,8 @@ func (r *ProjectTestResults) GetRawJSONBytes() []byte {
 func (r *ProjectTestResults) GetJSONResult() []map[string]any {
 	return r.output
 }
+
+// GetStderr returns the standard error output from the command.
+func (r *ProjectTestResults) GetStderr() string {
+	return r.inner.Stderr
+}

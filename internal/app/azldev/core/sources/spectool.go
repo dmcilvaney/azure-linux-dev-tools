@@ -36,7 +36,9 @@ func ListSpecFiles(ctx context.Context, cmdFactory opctx.CmdFactory, specPath st
 		"spec", specPath,
 	)
 
-	rawCmd := exec.CommandContext(ctx, spectoolBinary, "-l", "-a", specPath)
+	rawCmd := exec.CommandContext(ctx, spectoolBinary,
+		"--define", "_sourcedir "+filepath.Dir(specPath),
+		"-l", "-a", specPath)
 
 	var stderr strings.Builder
 
@@ -53,47 +55,7 @@ func ListSpecFiles(ctx context.Context, cmdFactory opctx.CmdFactory, specPath st
 			specPath, stderr.String(), err)
 	}
 
-	// Parse output lines like:
-	//   Source0: ftp://ftp.gnu.org/pub/gnu/sed/sed-4.9.tar.xz
-	//   Patch0: sed-b-flag.patch
-	//   Patch1: patches/fix.patch
-	// For URL values, extract the basename. For local paths, keep the
-	// relative path so callers can preserve directory structure.
-	var files []string
-
-	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
-		if line == "" {
-			continue
-		}
-
-		// Each line is "SourceN: <url-or-filename>" or "PatchN: <filename>"
-		_, value, found := strings.Cut(line, ": ")
-		if !found {
-			continue
-		}
-
-		trimmed := strings.TrimSpace(value)
-
-		var name string
-		if isURL(trimmed) {
-			// URLs: parse properly to handle query strings and fragments,
-			// then extract the filename from the path component.
-			name = extractFilenameFromURL(trimmed)
-		} else {
-			// Local paths: clean but preserve relative directory structure.
-			// Reject absolute or traversal paths.
-			cleaned := filepath.Clean(trimmed)
-			if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
-				continue
-			}
-
-			name = cleaned
-		}
-
-		if name != "" && name != "." {
-			files = append(files, name)
-		}
-	}
+	files := parseSpectoolOutput(stdout)
 
 	slog.Debug("spectool listed spec files",
 		"spec", specPath,
@@ -119,4 +81,48 @@ func extractFilenameFromURL(rawURL string) string {
 	}
 
 	return path.Base(parsed.Path)
+}
+
+// parseSpectoolOutput parses the raw stdout from spectool -l -a into a list of
+// source/patch filenames. For URL values, extracts the basename. For local paths,
+// preserves the relative directory structure.
+func parseSpectoolOutput(stdout string) []string {
+	// Parse output lines like:
+	//   Source0: ftp://ftp.gnu.org/pub/gnu/sed/sed-4.9.tar.xz
+	//   Patch0: sed-b-flag.patch
+	//   Patch1: patches/fix.patch
+	var files []string
+
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+
+		// Each line is "SourceN: <url-or-filename>" or "PatchN: <filename>"
+		_, value, found := strings.Cut(line, ": ")
+		if !found {
+			continue
+		}
+
+		trimmed := strings.TrimSpace(value)
+
+		var name string
+		if isURL(trimmed) {
+			name = extractFilenameFromURL(trimmed)
+		} else {
+			// Local paths: clean but preserve relative directory structure.
+			cleaned := filepath.Clean(trimmed)
+			if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+				continue
+			}
+
+			name = cleaned
+		}
+
+		if name != "" && name != "." {
+			files = append(files, name)
+		}
+	}
+
+	return files
 }
