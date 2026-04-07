@@ -159,7 +159,19 @@ func (p *MockProcessor) BatchProcess(
 	for batchIdx, chunk := range subBatches {
 		batchResults, err := p.processChunk(ctx, &chunkCtx, chunk)
 		if err != nil {
-			return nil, fmt.Errorf("failed to process batch %d:\n%w", batchIdx, err)
+			slog.Error("Failed to process batch chunk",
+				"chunk", batchIdx, "error", err)
+
+			// Mark all components in this chunk as failed, but preserve results
+			// from earlier successful chunks.
+			for _, input := range chunk {
+				results = append(results, ComponentMockResult{
+					Name:  input.Name,
+					Error: fmt.Errorf("batch chunk %d failed:\n%w", batchIdx, err),
+				})
+			}
+
+			continue
 		}
 
 		results = append(results, batchResults...)

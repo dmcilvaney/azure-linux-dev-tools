@@ -33,7 +33,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 
 def process_component(staging_dir: str, name: str, spec_filename: str) -> dict:
-    """Run rpmautospec + spectool for a single component, returning a result dict."""
+    """Run rpmautospec + spectool for a single component, returning a result dict.
+
+    Trust boundary: name and spec_filename are validated by the Go caller
+    (validateComponentName rejects path separators; specFilename is always
+    filepath.Base of a real path on disk).
+    """
     comp_dir = os.path.join(staging_dir, name)
     spec_path = os.path.join(comp_dir, spec_filename)
 
@@ -88,6 +93,8 @@ def main() -> int:
         inputs = json.load(f)
 
     # Mark all paths as git-safe (ownership mismatch between host and chroot).
+    # safe.directory=* is acceptable here because this is an ephemeral, isolated
+    # mock chroot that is destroyed after use.
     subprocess.run(
         ["git", "config", "--global", "--add", "safe.directory", "*"],
         check=False,

@@ -4,7 +4,6 @@
 package projecttest
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -152,7 +151,7 @@ func initProjectGitRepo(t *testing.T, dir string) {
 	}
 
 	for _, args := range cmds {
-		cmd := exec.CommandContext(context.Background(), args[0], args[1:]...)
+		cmd := exec.CommandContext(t.Context(), args[0], args[1:]...)
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		require.NoError(t, err, "git command %v failed: %s", args, string(output))

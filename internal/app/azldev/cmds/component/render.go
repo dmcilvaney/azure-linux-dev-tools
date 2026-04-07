@@ -32,7 +32,7 @@ type RenderOptions struct {
 	OutputDir         string
 	OutputDirExplicit bool // True when --output-dir was explicitly passed on the CLI.
 	FailOnError       bool
-	CleanStale        bool
+	Force             bool
 }
 
 func renderOnAppInit(_ *azldev.App, parentCmd *cobra.Command) {
@@ -84,9 +84,9 @@ sidecar files are included. Multiple components can be rendered at once.`,
 	cmd.Flags().BoolVar(&options.FailOnError, "fail-on-error", false,
 		"exit with error if any component fails to render (useful for CI)")
 
-	cmd.Flags().BoolVar(&options.CleanStale, "clean-stale", false,
-		"remove stale rendered directories not matching any current component "+
-			"(required with -a and custom --output-dir)")
+	cmd.Flags().BoolVar(&options.Force, "force", false,
+		"allow overwriting existing rendered component directories when output "+
+			"is outside the project root")
 
 	return cmd
 }
@@ -106,9 +106,9 @@ const (
 	renderStatusCancelled = "cancelled"
 )
 
-// concurrentRenderLimit returns the number of concurrent component renders to allow.
-// Each render involves a git clone + overlay application + rpmautospec + spectool,
-// so this bounds both network and I/O load. Uses 2x CPU count since renders are I/O-bound.
+// concurrentRenderLimit returns the number of concurrent goroutines for phases 1 and 3.
+// Each goroutine involves git clone + overlay (phase 1) or file filtering + copy (phase 3),
+// so this bounds I/O parallelism. Uses 2x CPU count since these operations are I/O-bound.
 func concurrentRenderLimit() int {
 	return max(1, 2*runtime.NumCPU()) //nolint:mnd // 2x CPU empirically chosen via benchmarking
 }
@@ -122,6 +122,10 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 	if err := resolveAndValidateOutputDir(env, options); err != nil {
 		return nil, err
 	}
+
+	// Output inside the project root is fully managed (overwrite + stale cleanup).
+	// Output outside the project is export-only (no overwrite unless --force).
+	insideProject := isSubpathOfProject(env.ProjectDir(), options.OutputDir)
 
 	resolver := components.NewResolver(env)
 
@@ -169,16 +173,26 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 	mockResultMap := batchMockProcess(env, mockProcessor, stagingDir, prepared)
 
 	// ── Phase 3: Parallel finishing ──
-	parallelFinish(env, prepared, mockResultMap, results, stagingDir, options.OutputDir)
+	parallelFinish(env, prepared, mockResultMap, results, stagingDir, options.OutputDir,
+		insideProject || options.Force)
 
 	// Clean up stale rendered directories when rendering all components.
-	if options.ComponentFilter.IncludeAllComponents {
+	// Only runs for project-local output — never for external paths.
+	if options.ComponentFilter.IncludeAllComponents && insideProject {
 		if cleanupErr := cleanupStaleRenders(env.FS(), comps, options.OutputDir); cleanupErr != nil {
 			return results, fmt.Errorf("cleaning up stale rendered output:\n%w", cleanupErr)
 		}
 	}
 
 	// Sort results alphabetically for consistent output.
+	sortRenderResults(results)
+
+	return results, checkRenderErrors(results, options.FailOnError)
+}
+
+// sortRenderResults sorts render results alphabetically by component name,
+// with nil entries sorted to the end.
+func sortRenderResults(results []*RenderResult) {
 	slices.SortFunc(results, func(left, right *RenderResult) int {
 		switch {
 		case left == nil && right == nil:
@@ -191,8 +205,6 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 			return strings.Compare(left.Component, right.Component)
 		}
 	})
-
-	return results, checkRenderErrors(results, options.FailOnError)
 }
 
 // checkRenderErrors counts error results and returns an error if FailOnError is set.
@@ -460,6 +472,7 @@ func parallelFinish(
 	results []*RenderResult,
 	stagingDir string,
 	outputDir string,
+	allowOverwrite bool,
 ) {
 	if len(prepared) == 0 {
 		return
@@ -487,7 +500,7 @@ func parallelFinish(
 		go func(prep *preparedComponent) {
 			defer waitGroup.Done()
 
-			result := finishOneComponent(workerEnv, env, prep, mockResultMap, semaphore, stagingDir, outputDir)
+			result := finishOneComponent(workerEnv, env, prep, mockResultMap, semaphore, stagingDir, outputDir, allowOverwrite)
 			resultsChan <- finishResult{index: prep.index, result: result}
 		}(prep)
 	}
@@ -516,6 +529,7 @@ func finishOneComponent(
 	semaphore chan struct{},
 	stagingDir string,
 	outputDir string,
+	allowOverwrite bool,
 ) *RenderResult {
 	componentName := prep.comp.GetName()
 	compOutputDir := filepath.Join(outputDir, componentName)
@@ -539,7 +553,7 @@ func finishOneComponent(
 		Status:    renderStatusOK,
 	}
 
-	err := finishComponentRender(env, prep, mockResultMap, stagingDir, outputDir)
+	err := finishComponentRender(env, prep, mockResultMap, stagingDir, outputDir, allowOverwrite)
 	if err != nil {
 		slog.Error("Failed to finish rendering component",
 			"component", componentName, "error", err)
@@ -548,9 +562,12 @@ func finishOneComponent(
 		result.Error = err.Error()
 
 		// Clean any stale good output before writing the failure marker.
-		if removeErr := env.FS().RemoveAll(compOutputDir); removeErr != nil {
-			slog.Debug("Failed to clean output before writing error marker",
-				"path", compOutputDir, "error", removeErr)
+		// Only allowed for managed (project-local) output directories.
+		if allowOverwrite {
+			if removeErr := env.FS().RemoveAll(compOutputDir); removeErr != nil {
+				slog.Debug("Failed to clean output before writing error marker",
+					"path", compOutputDir, "error", removeErr)
+			}
 		}
 
 		writeRenderErrorMarker(env.FS(), compOutputDir)
@@ -568,6 +585,7 @@ func finishComponentRender(
 	mockResultMap map[string]*sources.ComponentMockResult,
 	stagingDir string,
 	baseOutputDir string,
+	allowOverwrite bool,
 ) error {
 	componentName := prep.comp.GetName()
 	componentDir := filepath.Join(stagingDir, componentName)
@@ -600,7 +618,7 @@ func finishComponentRender(
 	}
 
 	// Copy rendered files to the component's output directory.
-	if copyErr := copyRenderedOutput(env, componentDir, baseOutputDir, componentName); copyErr != nil {
+	if copyErr := copyRenderedOutput(env, componentDir, baseOutputDir, componentName, allowOverwrite); copyErr != nil {
 		return copyErr
 	}
 
@@ -610,14 +628,28 @@ func finishComponentRender(
 	return nil
 }
 
-// copyRenderedOutput copies the rendered files from tempDir to the component's output directory,
-// cleaning up any existing output first.
-func copyRenderedOutput(env *azldev.Env, tempDir, baseOutputDir, componentName string) error {
+// copyRenderedOutput copies the rendered files from tempDir to the component's output directory.
+// For managed output (inside project root), existing output is removed before copying.
+// For external output, existing directories cause an error.
+func copyRenderedOutput(env *azldev.Env, tempDir, baseOutputDir, componentName string, allowOverwrite bool) error {
 	componentOutputDir := filepath.Join(baseOutputDir, componentName)
 
-	// Clean up any existing rendered output for this component.
-	if removeErr := env.FS().RemoveAll(componentOutputDir); removeErr != nil {
-		return fmt.Errorf("cleaning output directory %#q:\n%w", componentOutputDir, removeErr)
+	exists, existsErr := fileutils.DirExists(env.FS(), componentOutputDir)
+	if existsErr != nil {
+		return fmt.Errorf("checking output directory %#q:\n%w", componentOutputDir, existsErr)
+	}
+
+	if exists {
+		if !allowOverwrite {
+			return fmt.Errorf(
+				"output directory %#q already exists; external output directories are not overwritten",
+				componentOutputDir)
+		}
+
+		// Clean up existing rendered output for this component.
+		if removeErr := env.FS().RemoveAll(componentOutputDir); removeErr != nil {
+			return fmt.Errorf("cleaning output directory %#q:\n%w", componentOutputDir, removeErr)
+		}
 	}
 
 	if mkdirErr := fileutils.MkdirAll(env.FS(), componentOutputDir); mkdirErr != nil {
@@ -792,16 +824,13 @@ func resolveAndValidateOutputDir(env *azldev.Env, options *RenderOptions) error 
 		return err
 	}
 
-	// Configured directories (default or from config) are safe to clean
-	// without --clean-stale. Only ad-hoc CLI overrides need the flag.
-	isConfigured := !options.OutputDirExplicit ||
-		options.OutputDir == defaultRenderOutputDir ||
-		options.OutputDir == env.Config().Project.RenderedSpecsDir
-
-	if options.ComponentFilter.IncludeAllComponents && !isConfigured && !options.CleanStale {
-		return fmt.Errorf(
-			"rendering all components to a custom directory %#q requires --clean-stale "+
-				"to confirm removal of stale subdirectories", options.OutputDir)
+	// Configured rendered-specs-dir must resolve inside the project root.
+	if configDir := env.Config().Project.RenderedSpecsDir; configDir != "" {
+		if !isSubpathOfProject(env.ProjectDir(), configDir) {
+			return fmt.Errorf(
+				"configured rendered-specs-dir %#q resolves outside the project root; "+
+					"it must be a path within the project", configDir)
+		}
 	}
 
 	return nil
@@ -817,6 +846,30 @@ func validateOutputDir(outputDir string) error {
 	}
 
 	return nil
+}
+
+// isSubpathOfProject reports whether outputDir resolves to a path under projectDir.
+// Relative paths are resolved against the current working directory.
+func isSubpathOfProject(projectDir, outputDir string) bool {
+	if projectDir == "" {
+		return false
+	}
+
+	absOutput, err := filepath.Abs(outputDir)
+	if err != nil {
+		return false
+	}
+
+	absProject, err := filepath.Abs(projectDir)
+	if err != nil {
+		return false
+	}
+
+	// Ensure the project path ends with a separator so "/project-other" doesn't
+	// match "/project".
+	prefix := filepath.Clean(absProject) + string(filepath.Separator)
+
+	return strings.HasPrefix(filepath.Clean(absOutput)+string(filepath.Separator), prefix)
 }
 
 // validateComponentName rejects component names that could cause path traversal

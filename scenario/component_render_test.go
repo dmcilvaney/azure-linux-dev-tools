@@ -208,7 +208,7 @@ func TestRenderStaleCleanup(t *testing.T) {
 	results := projecttest.NewProjectTest(
 		project,
 		// Render all with -a to trigger stale cleanup.
-		[]string{"component", "render", "-a", "-o", "project/SPECS", "--clean-stale"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 
@@ -348,7 +348,7 @@ func TestRenderMultipleComponentsParallel(t *testing.T) {
 
 	results := projecttest.NewProjectTest(
 		project,
-		[]string{"component", "render", "-a", "-o", "project/SPECS", "--clean-stale"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 
@@ -411,7 +411,7 @@ func TestRenderBrokenSpecWithGoodSpec(t *testing.T) {
 
 	results := projecttest.NewProjectTest(
 		project,
-		[]string{"component", "render", "-a", "-o", "project/SPECS", "--clean-stale"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 
