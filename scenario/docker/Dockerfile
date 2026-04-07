@@ -36,13 +36,7 @@ RUN tdnf -y install \
     moby-containerd \
     moby-engine \
     docker-cli \
-    python3-pip \
-    rpmdevtools \
     sudo
-
-# Install rpmautospec for spec rendering (not available as azl3 RPM, use pip).
-# pygit2 is required by rpmautospec for reading git history.
-RUN pip3 install --no-cache-dir rpmautospec pygit2
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 

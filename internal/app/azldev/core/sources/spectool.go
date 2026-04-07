@@ -4,67 +4,11 @@
 package sources
 
 import (
-	"context"
-	"fmt"
-	"log/slog"
 	"net/url"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
-
-	"github.com/microsoft/azure-linux-dev-tools/internal/global/opctx"
 )
-
-const spectoolBinary = "spectool"
-
-// ListSpecFiles runs spectool to list the source and patch filenames referenced
-// by a spec file. For URL values (sources), returns just the basename (e.g.,
-// "curl-8.0.tar.xz"). For local paths (patches), returns the cleaned relative
-// path as referenced in the spec (e.g., "patches/fix.patch").
-//
-// Returns an error if spectool is not installed or the spec can't be parsed
-// (e.g., due to undefined macros like %gometa).
-func ListSpecFiles(ctx context.Context, cmdFactory opctx.CmdFactory, specPath string) ([]string, error) {
-	if !cmdFactory.CommandInSearchPath(spectoolBinary) {
-		return nil, fmt.Errorf(
-			"spectool not found in PATH; install via: "+
-				"dnf install rpmdevtools:\n%w", exec.ErrNotFound)
-	}
-
-	slog.Debug("Running spectool to list spec files",
-		"spec", specPath,
-	)
-
-	rawCmd := exec.CommandContext(ctx, spectoolBinary,
-		"--define", "_sourcedir "+filepath.Dir(specPath),
-		"-l", "-a", specPath)
-
-	var stderr strings.Builder
-
-	rawCmd.Stderr = &stderr
-
-	cmd, err := cmdFactory.Command(rawCmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to wrap spectool command:\n%w", err)
-	}
-
-	stdout, err := cmd.RunAndGetOutput(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("spectool failed for %#q:\n%s\n%w",
-			specPath, stderr.String(), err)
-	}
-
-	files := parseSpectoolOutput(stdout)
-
-	slog.Debug("spectool listed spec files",
-		"spec", specPath,
-		"count", len(files),
-		"files", files,
-	)
-
-	return files, nil
-}
 
 // isURL returns true if the value looks like a URL (has a scheme).
 func isURL(value string) bool {

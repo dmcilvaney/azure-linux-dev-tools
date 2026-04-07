@@ -29,10 +29,11 @@ const defaultRenderOutputDir = "SPECS"
 
 // RenderOptions holds the options for the render command.
 type RenderOptions struct {
-	ComponentFilter components.ComponentFilter
-	OutputDir       string
-	FailOnError     bool
-	CleanStale      bool
+	ComponentFilter   components.ComponentFilter
+	OutputDir         string
+	OutputDirExplicit bool // True when --output-dir was explicitly passed on the CLI.
+	FailOnError       bool
+	CleanStale        bool
 }
 
 func renderOnAppInit(_ *azldev.App, parentCmd *cobra.Command) {
@@ -43,7 +44,9 @@ func renderOnAppInit(_ *azldev.App, parentCmd *cobra.Command) {
 func NewRenderCmd() *cobra.Command {
 	var options RenderOptions
 
-	cmd := &cobra.Command{
+	var cmd *cobra.Command
+
+	cmd = &cobra.Command{
 		Use:   "render",
 		Short: "Render post-overlay specs and sidecar files to a checked-in directory",
 		Long: `Render the final spec and sidecar files for components after applying all
@@ -63,6 +66,7 @@ sidecar files are included. Multiple components can be rendered at once.`,
   azldev component render -a -o rendered/`,
 		RunE: azldev.RunFuncWithExtraArgs(func(env *azldev.Env, args []string) (interface{}, error) {
 			options.ComponentFilter.ComponentNamePatterns = append(args, options.ComponentFilter.ComponentNamePatterns...)
+			options.OutputDirExplicit = cmd.Flags().Changed("output-dir")
 
 			return RenderComponents(env, &options)
 		}),
@@ -116,20 +120,7 @@ func concurrentRenderLimit() int {
 //  2. Batch mock processing (rpmautospec + spectool in a single chroot call)
 //  3. Parallel finishing (filter files, remove .git, copy output)
 func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult, error) {
-	// Resolve output directory: prefer explicit CLI flag, then project config, then default.
-	// Track whether the directory is "configured" (default or from config) vs an ad-hoc CLI
-	// override, since configured directories are safe to clean without --clean-stale.
-	configuredOutputDir := true
-
-	if options.OutputDir == defaultRenderOutputDir {
-		if configDir := env.Config().Project.RenderedSpecsDir; configDir != "" {
-			options.OutputDir = configDir
-		}
-	} else if options.OutputDir != env.Config().Project.RenderedSpecsDir {
-		configuredOutputDir = false
-	}
-
-	if err := validateOutputDir(options.OutputDir); err != nil {
+	if err := resolveAndValidateOutputDir(env, options); err != nil {
 		return nil, err
 	}
 
@@ -144,17 +135,6 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 		return nil, errors.New("no components were selected; " +
 			"please use command-line options to indicate which components to render",
 		)
-	}
-
-	// When rendering all components to an ad-hoc directory (not the default
-	// or a configured path), require --clean-stale so the user acknowledges
-	// that stale subdirectories will be deleted.
-	if options.ComponentFilter.IncludeAllComponents &&
-		!configuredOutputDir &&
-		!options.CleanStale {
-		return nil, fmt.Errorf(
-			"rendering all components to a custom directory %#q requires --clean-stale "+
-				"to confirm removal of stale subdirectories", options.OutputDir)
 	}
 
 	// Create mock processor for rpmautospec/spectool.
@@ -200,8 +180,17 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 	}
 
 	// Sort results alphabetically for consistent output.
-	slices.SortFunc(results, func(a, b *RenderResult) int {
-		return strings.Compare(a.Component, b.Component)
+	slices.SortFunc(results, func(left, right *RenderResult) int {
+		switch {
+		case left == nil && right == nil:
+			return 0
+		case left == nil:
+			return 1 // nils sort to end
+		case right == nil:
+			return -1
+		default:
+			return strings.Compare(left.Component, right.Component)
+		}
 	})
 
 	return results, checkRenderErrors(results, options.FailOnError)
@@ -243,6 +232,7 @@ type preparedComponent struct {
 
 // prepResult pairs a prepared component (on success) or a render result (on error).
 type prepResult struct {
+	index    int
 	prepared *preparedComponent
 	result   *RenderResult // non-nil on error
 }
@@ -295,14 +285,7 @@ func parallelPrepare(
 		progressEvent.SetProgress(completed, total)
 
 		if prepRes.result != nil {
-			// Find index for this failed component.
-			for idx, comp := range comps {
-				if comp.GetName() == prepRes.result.Component {
-					results[idx] = prepRes.result
-
-					break
-				}
-			}
+			results[prepRes.index] = prepRes.result
 		} else {
 			prepared = append(prepared, prepRes.prepared)
 		}
@@ -322,7 +305,7 @@ func prepWithSemaphore(
 ) prepResult {
 	// Validate component name before any filesystem work.
 	if err := validateComponentName(comp.GetName()); err != nil {
-		return prepResult{result: &RenderResult{
+		return prepResult{index: index, result: &RenderResult{
 			Component: comp.GetName(),
 			OutputDir: "(invalid)",
 			Status:    renderStatusError,
@@ -335,7 +318,7 @@ func prepWithSemaphore(
 	case semaphore <- struct{}{}:
 		defer func() { <-semaphore }()
 	case <-env.Done():
-		return prepResult{result: &RenderResult{
+		return prepResult{index: index, result: &RenderResult{
 			Component: comp.GetName(),
 			OutputDir: comp.GetName(),
 			Status:    renderStatusCancelled,
@@ -348,7 +331,7 @@ func prepWithSemaphore(
 		slog.Error("Failed to prepare component sources",
 			"component", comp.GetName(), "error", err)
 
-		return prepResult{result: &RenderResult{
+		return prepResult{index: index, result: &RenderResult{
 			Component: comp.GetName(),
 			OutputDir: comp.GetName(),
 			Status:    renderStatusError,
@@ -358,7 +341,7 @@ func prepWithSemaphore(
 
 	prep.index = index
 
-	return prepResult{prepared: prep}
+	return prepResult{index: index, prepared: prep}
 }
 
 // prepareComponentSources resolves the distro, creates a source manager, and
@@ -439,9 +422,6 @@ func batchMockProcess(
 	if len(prepared) == 0 {
 		return nil
 	}
-
-	progressEvent := env.StartEvent("Processing specs in mock chroot", "count", len(prepared))
-	defer progressEvent.End()
 
 	// Build batch inputs from prepared components.
 	inputs := make([]sources.ComponentInput, len(prepared))
@@ -801,6 +781,36 @@ func writeRenderErrorMarker(fs opctx.FS, componentOutputDir string) {
 	}
 }
 
+// resolveAndValidateOutputDir resolves the output directory from CLI flags and
+// project config, validates it, and checks the --clean-stale requirement for
+// ad-hoc directories.
+func resolveAndValidateOutputDir(env *azldev.Env, options *RenderOptions) error {
+	// Resolve: explicit CLI flag wins, then project config, then default.
+	if !options.OutputDirExplicit {
+		if configDir := env.Config().Project.RenderedSpecsDir; configDir != "" {
+			options.OutputDir = configDir
+		}
+	}
+
+	if err := validateOutputDir(options.OutputDir); err != nil {
+		return err
+	}
+
+	// Configured directories (default or from config) are safe to clean
+	// without --clean-stale. Only ad-hoc CLI overrides need the flag.
+	isConfigured := !options.OutputDirExplicit ||
+		options.OutputDir == defaultRenderOutputDir ||
+		options.OutputDir == env.Config().Project.RenderedSpecsDir
+
+	if options.ComponentFilter.IncludeAllComponents && !isConfigured && !options.CleanStale {
+		return fmt.Errorf(
+			"rendering all components to a custom directory %#q requires --clean-stale "+
+				"to confirm removal of stale subdirectories", options.OutputDir)
+	}
+
+	return nil
+}
+
 // validateOutputDir rejects output directory values that could cause
 // cleanupStaleRenders to delete unrelated directories.
 func validateOutputDir(outputDir string) error {
@@ -816,9 +826,11 @@ func validateOutputDir(outputDir string) error {
 // validateComponentName rejects component names that could cause path traversal
 // when used as directory names in filepath.Join.
 func validateComponentName(name string) error {
-	if strings.Contains(name, "/") || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+	if name == "" || name == "." ||
+		strings.Contains(name, "/") || strings.Contains(name, "\\") ||
+		strings.Contains(name, "..") || strings.ContainsRune(name, 0) {
 		return fmt.Errorf(
-			"component name %#q contains path separators or traversal sequences", name)
+			"component name %#q is invalid or contains path separators/traversal sequences", name)
 	}
 
 	return nil

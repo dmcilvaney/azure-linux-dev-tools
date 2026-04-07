@@ -227,12 +227,9 @@ func TestRenderStaleCleanup(t *testing.T) {
 }
 
 // TestRenderSpecWithUndefinedMacros verifies that a spec using macros not available
-// on the host (like %gometa for golang packages) renders with "warning" status rather
-// than failing. The spec should still be present in the output, just with unexpanded
-// macros. This currently affects ~430 of ~7k packages in the real azurelinux project.
-//
-// TODO(bn-706a): Once mock chroot fallback is implemented, this test should assert
-// "ok" status instead of "warning", since mock will have all macro packages available.
+// on the host (like %gometa for golang packages) renders successfully via mock.
+// The mock chroot has all ecosystem macro packages (go-srpm-macros, etc.) available
+// via @buildsys-build, so rpmautospec and spectool succeed where host tools would fail.
 func TestRenderSpecWithUndefinedMacros(t *testing.T) {
 	t.Parallel()
 
@@ -294,15 +291,10 @@ License:        MIT
 	output := results.GetJSONResult()
 	require.Len(t, output, 1)
 
-	// With mock fallback working (azl4 chroot has go-srpm-macros + rpmautospec),
-	// rpmautospec should succeed. Spectool may still fail for complex golang specs
-	// so status may be "warning" (filtering skipped) rather than "ok".
-	assert.Contains(t, []string{"ok", "warning"}, output[0]["status"],
-		"Spec with golang macros should render via mock fallback (warning acceptable if spectool fails)")
-
-	// Verify mock fallback WAS triggered (host rpmautospec can't parse %gometa).
-	assert.Contains(t, results.GetStderr(), "Initializing mock chroot",
-		"Mock fallback should be triggered for specs with undefined host macros")
+	// With mock processing (azl4 chroot has go-srpm-macros + rpmautospec),
+	// the spec should render successfully.
+	assert.Equal(t, "ok", output[0]["status"],
+		"Spec with golang macros should render ok via mock processing")
 
 	// The spec file should exist in the output.
 	renderedSpecPath := results.GetProjectOutputPath("SPECS", "golang-example", "golang-example.spec")
