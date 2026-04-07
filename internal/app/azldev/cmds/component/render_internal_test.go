@@ -202,6 +202,30 @@ func TestValidateComponentName(t *testing.T) {
 	}
 }
 
+func TestIsSubpathOfProject(t *testing.T) {
+	tests := []struct {
+		name       string
+		projectDir string
+		outputDir  string
+		want       bool
+	}{
+		{"relative inside", "/repo", "/repo/SPECS", true},
+		{"relative nested", "/repo", "/repo/out/rendered", true},
+		{"exact match", "/repo", "/repo", true},
+		{"outside project", "/repo", "/tmp/rendered", false},
+		{"prefix collision", "/repo", "/repo-other/SPECS", false},
+		{"parent dir", "/repo", "/", false},
+		{"empty project dir", "", "/repo/SPECS", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSubpathOfProject(tt.projectDir, tt.outputDir)
+			assert.Equal(t, tt.want, got, "isSubpathOfProject(%q, %q)", tt.projectDir, tt.outputDir)
+		})
+	}
+}
+
 func TestRemoveUnreferencedFiles(t *testing.T) {
 	t.Run("keeps spec and referenced files, removes others", func(t *testing.T) {
 		testFS := afero.NewMemMapFs()

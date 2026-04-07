@@ -35,10 +35,10 @@ azldev component render [flags]
 
 ```
   -a, --all-components                Include all components
-      --clean-stale                   remove stale rendered directories not matching any current component (required with -a and custom --output-dir)
   -p, --component stringArray         Component name pattern
   -g, --component-group stringArray   Component group name
       --fail-on-error                 exit with error if any component fails to render (useful for CI)
+      --force                         allow overwriting existing rendered component directories when output is outside the project root
   -h, --help                          help for render
   -o, --output-dir string             output directory for rendered specs (default "SPECS")
   -s, --spec-path stringArray         Spec path
