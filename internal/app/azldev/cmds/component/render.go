@@ -23,9 +23,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultRenderOutputDir is the default output directory for rendered specs.
-const defaultRenderOutputDir = "SPECS"
-
 // RenderOptions holds the options for the render command.
 type RenderOptions struct {
 	ComponentFilter   components.ComponentFilter
@@ -49,20 +46,23 @@ func NewRenderCmd() *cobra.Command {
 		Use:   "render",
 		Short: "Render post-overlay specs and sidecar files to a checked-in directory",
 		Long: `Render the final spec and sidecar files for components after applying all
-configured overlays. The output is written to a directory (default: SPECS/)
-as generated artifacts intended for check-in.
+configured overlays. The output is written to a directory as generated artifacts
+intended for check-in.
+
+The output directory is set via rendered-specs-dir in the project config, or
+via --output-dir on the command line. If neither is set, an error is returned.
 
 Unlike prepare-sources, render skips downloading source tarballs from the
 lookaside cache — only spec files, patches, scripts, and other git-tracked
 sidecar files are included. Multiple components can be rendered at once.`,
-		Example: `  # Render all components
+		Example: `  # Render all components (output dir from config)
   azldev component render -a
 
   # Render a single component
   azldev component render -p curl
 
   # Render to a custom directory
-  azldev component render -a -o rendered/`,
+  azldev component render -a -o rendered/ --force`,
 		RunE: azldev.RunFuncWithExtraArgs(func(env *azldev.Env, args []string) (interface{}, error) {
 			options.ComponentFilter.ComponentNamePatterns = append(args, options.ComponentFilter.ComponentNamePatterns...)
 			options.OutputDirExplicit = cmd.Flags().Changed("output-dir")
@@ -77,16 +77,15 @@ sidecar files are included. Multiple components can be rendered at once.`,
 
 	components.AddComponentFilterOptionsToCommand(cmd, &options.ComponentFilter)
 
-	cmd.Flags().StringVarP(&options.OutputDir, "output-dir", "o", defaultRenderOutputDir,
-		"output directory for rendered specs")
+	cmd.Flags().StringVarP(&options.OutputDir, "output-dir", "o", "",
+		"output directory for rendered specs (overrides rendered-specs-dir from config)")
 	_ = cmd.MarkFlagDirname("output-dir")
 
 	cmd.Flags().BoolVar(&options.FailOnError, "fail-on-error", false,
 		"exit with error if any component fails to render (useful for CI)")
 
-	cmd.Flags().BoolVar(&options.Force, "force", false,
-		"allow overwriting existing rendered component directories when output "+
-			"is outside the project root")
+	cmd.Flags().BoolVarP(&options.Force, "force", "f", false,
+		"delete and recreate existing rendered component directories")
 
 	return cmd
 }
@@ -122,10 +121,6 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 	if err := resolveAndValidateOutputDir(env, options); err != nil {
 		return nil, err
 	}
-
-	// Output inside the project root is fully managed (overwrite + stale cleanup).
-	// Output outside the project is export-only (no overwrite unless --force).
-	insideProject := isSubpathOfProject(env.ProjectDir(), options.OutputDir)
 
 	resolver := components.NewResolver(env)
 
@@ -174,11 +169,11 @@ func RenderComponents(env *azldev.Env, options *RenderOptions) ([]*RenderResult,
 
 	// ── Phase 3: Parallel finishing ──
 	parallelFinish(env, prepared, mockResultMap, results, stagingDir, options.OutputDir,
-		insideProject || options.Force)
+		options.Force)
 
 	// Clean up stale rendered directories when rendering all components.
-	// Only runs for project-local output — never for external paths.
-	if options.ComponentFilter.IncludeAllComponents && insideProject {
+	// Only runs when --force is set (auto-set for configured dirs).
+	if options.ComponentFilter.IncludeAllComponents && options.Force {
 		if cleanupErr := cleanupStaleRenders(env.FS(), comps, options.OutputDir); cleanupErr != nil {
 			return results, fmt.Errorf("cleaning up stale rendered output:\n%w", cleanupErr)
 		}
@@ -810,30 +805,26 @@ func writeRenderErrorMarker(fs opctx.FS, componentOutputDir string) {
 }
 
 // resolveAndValidateOutputDir resolves the output directory from CLI flags and
-// project config, validates it, and checks the --clean-stale requirement for
-// ad-hoc directories.
+// project config. If the config has rendered-specs-dir, it is used as the default
+// and --force is auto-set (the configured path is trusted). If neither the config
+// nor --output-dir provides a path, an error is returned.
 func resolveAndValidateOutputDir(env *azldev.Env, options *RenderOptions) error {
-	// Resolve: explicit CLI flag wins, then project config, then default.
-	if !options.OutputDirExplicit {
-		if configDir := env.Config().Project.RenderedSpecsDir; configDir != "" {
-			options.OutputDir = configDir
-		}
+	configDir := env.Config().Project.RenderedSpecsDir
+
+	switch {
+	case options.OutputDirExplicit:
+		// CLI flag wins — use as-is.
+	case configDir != "":
+		// Config provides the output dir; auto-trust it.
+		options.OutputDir = configDir
+		options.Force = true
+	default:
+		return errors.New(
+			"no output directory configured; set rendered-specs-dir in the project config " +
+				"or pass --output-dir (-o) on the command line")
 	}
 
-	if err := validateOutputDir(options.OutputDir); err != nil {
-		return err
-	}
-
-	// Configured rendered-specs-dir must resolve inside the project root.
-	if configDir := env.Config().Project.RenderedSpecsDir; configDir != "" {
-		if !isSubpathOfProject(env.ProjectDir(), configDir) {
-			return fmt.Errorf(
-				"configured rendered-specs-dir %#q resolves outside the project root; "+
-					"it must be a path within the project", configDir)
-		}
-	}
-
-	return nil
+	return validateOutputDir(options.OutputDir)
 }
 
 // validateOutputDir rejects output directory values that could cause
@@ -846,30 +837,6 @@ func validateOutputDir(outputDir string) error {
 	}
 
 	return nil
-}
-
-// isSubpathOfProject reports whether outputDir resolves to a path under projectDir.
-// Relative paths are resolved against the current working directory.
-func isSubpathOfProject(projectDir, outputDir string) bool {
-	if projectDir == "" {
-		return false
-	}
-
-	absOutput, err := filepath.Abs(outputDir)
-	if err != nil {
-		return false
-	}
-
-	absProject, err := filepath.Abs(projectDir)
-	if err != nil {
-		return false
-	}
-
-	// Ensure the project path ends with a separator so "/project-other" doesn't
-	// match "/project".
-	prefix := filepath.Clean(absProject) + string(filepath.Separator)
-
-	return strings.HasPrefix(filepath.Clean(absOutput)+string(filepath.Separator), prefix)
 }
 
 // validateComponentName rejects component names that could cause path traversal

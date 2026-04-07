@@ -128,6 +128,17 @@ func AddFile(relativePath, content string) DynamicTestProjectOption {
 	}
 }
 
+// WithRenderedSpecsDir sets the rendered-specs-dir project config field.
+func WithRenderedSpecsDir(dir string) DynamicTestProjectOption {
+	return func(p *dynamicTestProject) {
+		if p.configFile.Project == nil {
+			p.configFile.Project = &projectconfig.ProjectInfo{}
+		}
+
+		p.configFile.Project.RenderedSpecsDir = dir
+	}
+}
+
 // WithGitRepo initializes the project directory as a git repository with an initial
 // commit containing all project files. Required for commands that use synthetic history
 // (e.g., [component render]).

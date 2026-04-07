@@ -74,6 +74,49 @@ func TestRenderSimpleLocalSpec(t *testing.T) {
 	assert.Contains(t, contentStr, "Version: 1.0.0")
 }
 
+// TestRenderWithConfiguredOutputDir verifies that rendering works when the output
+// directory comes from the project config (rendered-specs-dir) instead of --output-dir.
+// This is the most common real-world usage. The config auto-sets --force, enabling
+// stale cleanup without an explicit flag.
+func TestRenderWithConfiguredOutputDir(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping long test")
+	}
+
+	spec := projecttest.NewSpec(
+		projecttest.WithName("config-test"),
+		projecttest.WithVersion("1.0.0"),
+		projecttest.WithRelease("1%{?dist}"),
+		projecttest.WithBuildArch(projecttest.NoArch),
+	)
+
+	project := projecttest.NewDynamicTestProject(
+		projecttest.AddSpec(spec),
+		projecttest.AddComponent(localComponentConfig("config-test")),
+		projecttest.UseTestDefaultConfigs(),
+		projecttest.WithGitRepo(),
+		// Set rendered-specs-dir in project config instead of using -o.
+		projecttest.WithRenderedSpecsDir("SPECS"),
+	)
+
+	results := projecttest.NewProjectTest(
+		project,
+		// No -o flag — output dir comes from config.
+		[]string{"component", "render", "config-test"},
+		projecttest.WithTestDefaultConfigs(),
+	).RunInContainer(t)
+
+	output := results.GetJSONResult()
+	require.Len(t, output, 1)
+	assert.Equal(t, "ok", output[0]["status"],
+		"Spec should render ok with config-provided output dir")
+
+	renderedSpecPath := results.GetProjectOutputPath("SPECS", "config-test", "config-test.spec")
+	require.FileExists(t, renderedSpecPath)
+}
+
 func TestRenderWithOverlayApplied(t *testing.T) {
 	t.Parallel()
 
@@ -208,7 +251,7 @@ func TestRenderStaleCleanup(t *testing.T) {
 	results := projecttest.NewProjectTest(
 		project,
 		// Render all with -a to trigger stale cleanup.
-		[]string{"component", "render", "-a", "-o", "project/SPECS"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS", "--force"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 
@@ -224,6 +267,51 @@ func TestRenderStaleCleanup(t *testing.T) {
 	// Verify the kept component still exists.
 	keptPath := results.GetProjectOutputPath("SPECS", "keep-me")
 	assert.DirExists(t, keptPath, "Rendered component directory should still exist")
+}
+
+// TestRenderRefusesOverwriteWithoutForce verifies that rendering to an existing
+// component output directory fails without --force, protecting against accidental
+// data loss.
+func TestRenderRefusesOverwriteWithoutForce(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping long test")
+	}
+
+	spec := projecttest.NewSpec(
+		projecttest.WithName("no-clobber"),
+		projecttest.WithVersion("1.0.0"),
+		projecttest.WithBuildArch(projecttest.NoArch),
+	)
+
+	// Pre-populate the output directory with existing content.
+	project := projecttest.NewDynamicTestProject(
+		projecttest.AddSpec(spec),
+		projecttest.AddComponent(localComponentConfig("no-clobber")),
+		projecttest.UseTestDefaultConfigs(),
+		projecttest.WithGitRepo(),
+		projecttest.AddFile("SPECS/no-clobber/existing-file.txt", "do not delete me\n"),
+	)
+
+	results := projecttest.NewProjectTest(
+		project,
+		// Render WITHOUT --force — should fail because output dir exists.
+		[]string{"component", "render", "no-clobber", "-o", "project/SPECS"},
+		projecttest.WithTestDefaultConfigs(),
+	).RunInContainer(t)
+
+	output := results.GetJSONResult()
+	require.Len(t, output, 1)
+
+	// Should report error because the output directory already exists.
+	assert.Equal(t, "error", output[0]["status"],
+		"Render should fail when output dir exists without --force")
+
+	// The pre-existing file should NOT have been deleted.
+	existingPath := results.GetProjectOutputPath("SPECS", "no-clobber", "existing-file.txt")
+	require.FileExists(t, existingPath,
+		"Pre-existing file should be preserved when --force is not set")
 }
 
 // TestRenderSpecWithUndefinedMacros verifies that a spec using macros not available
@@ -348,7 +436,7 @@ func TestRenderMultipleComponentsParallel(t *testing.T) {
 
 	results := projecttest.NewProjectTest(
 		project,
-		[]string{"component", "render", "-a", "-o", "project/SPECS"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS", "--force"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 
@@ -411,7 +499,7 @@ func TestRenderBrokenSpecWithGoodSpec(t *testing.T) {
 
 	results := projecttest.NewProjectTest(
 		project,
-		[]string{"component", "render", "-a", "-o", "project/SPECS"},
+		[]string{"component", "render", "-a", "-o", "project/SPECS", "--force"},
 		projecttest.WithTestDefaultConfigs(),
 	).RunInContainer(t)
 

@@ -25,7 +25,7 @@ func TestNewRenderCmd_Flags(t *testing.T) {
 	outputDirFlag := cmd.Flags().Lookup("output-dir")
 	require.NotNil(t, outputDirFlag, "output-dir flag should be registered")
 	assert.Equal(t, "o", outputDirFlag.Shorthand)
-	assert.Equal(t, "SPECS", outputDirFlag.DefValue)
+	assert.Empty(t, outputDirFlag.DefValue)
 
 	allFlag := cmd.Flags().Lookup("all-components")
 	require.NotNil(t, allFlag, "all-components flag should be registered")
@@ -52,4 +52,17 @@ func TestRenderCmd_NoComponents(t *testing.T) {
 
 	// We expect an error because no components match.
 	require.Error(t, err)
+}
+
+func TestRenderCmd_NoOutputDir(t *testing.T) {
+	testEnv := testutils.NewTestEnv(t)
+
+	cmd := componentcmds.NewRenderCmd()
+	cmd.SetArgs([]string{"-a"})
+
+	err := cmd.ExecuteContext(testEnv.Env)
+
+	// Without config rendered-specs-dir or -o, render should fail.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no output directory configured")
 }

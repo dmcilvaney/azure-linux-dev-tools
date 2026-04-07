@@ -7,8 +7,11 @@ Render post-overlay specs and sidecar files to a checked-in directory
 ### Synopsis
 
 Render the final spec and sidecar files for components after applying all
-configured overlays. The output is written to a directory (default: SPECS/)
-as generated artifacts intended for check-in.
+configured overlays. The output is written to a directory as generated artifacts
+intended for check-in.
+
+The output directory is set via rendered-specs-dir in the project config, or
+via --output-dir on the command line. If neither is set, an error is returned.
 
 Unlike prepare-sources, render skips downloading source tarballs from the
 lookaside cache — only spec files, patches, scripts, and other git-tracked
@@ -21,14 +24,14 @@ azldev component render [flags]
 ### Examples
 
 ```
-  # Render all components
+  # Render all components (output dir from config)
   azldev component render -a
 
   # Render a single component
   azldev component render -p curl
 
   # Render to a custom directory
-  azldev component render -a -o rendered/
+  azldev component render -a -o rendered/ --force
 ```
 
 ### Options
@@ -38,9 +41,9 @@ azldev component render [flags]
   -p, --component stringArray         Component name pattern
   -g, --component-group stringArray   Component group name
       --fail-on-error                 exit with error if any component fails to render (useful for CI)
-      --force                         allow overwriting existing rendered component directories when output is outside the project root
+  -f, --force                         delete and recreate existing rendered component directories
   -h, --help                          help for render
-  -o, --output-dir string             output directory for rendered specs (default "SPECS")
+  -o, --output-dir string             output directory for rendered specs (overrides rendered-specs-dir from config)
   -s, --spec-path stringArray         Spec path
 ```
 
