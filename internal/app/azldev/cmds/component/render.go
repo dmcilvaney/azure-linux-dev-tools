@@ -23,7 +23,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// RenderOptions holds the options for the render command.
 // defaultRenderOutputDir is the default output directory for rendered specs.
 const defaultRenderOutputDir = "SPECS"
 

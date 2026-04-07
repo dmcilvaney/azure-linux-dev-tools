@@ -33,7 +33,7 @@ type dynamicTestProject struct {
 	initGitRepo bool
 }
 
-// NewDynamicProject dynamically constructs a new test project that can later be
+// NewDynamicTestProject dynamically constructs a new test project that can later be
 // rendered to files and used in a test.
 func NewDynamicTestProject(options ...DynamicTestProjectOption) *dynamicTestProject {
 	// Start the project off with a basic configuration and an empty set of additional files.

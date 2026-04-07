@@ -171,6 +171,12 @@ func (r *Runner) WithUnprivileged() *Runner {
 	return r
 }
 
+// HasUnprivileged indicates whether the [Runner] is configured to drop privileges
+// for chroot commands.
+func (r *Runner) HasUnprivileged() bool {
+	return r.unprivileged
+}
+
 // WithBaseDir updates the [Runner]'s configuration to set which directory mock roots are created
 // under by default. If not set, mock will write under its default base (/var/lib/mock).
 func (r *Runner) WithBaseDir(baseDir string) *Runner {

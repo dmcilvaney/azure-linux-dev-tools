@@ -185,6 +185,9 @@ func TestValidateComponentName(t *testing.T) {
 		{"foo/bar", true},
 		{"foo\\bar", true},
 		{"..evil", true},
+		{"", true},
+		{".", true},
+		{"has\x00null", true},
 	}
 
 	for _, tt := range tests {

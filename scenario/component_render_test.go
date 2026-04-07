@@ -299,7 +299,7 @@ License:        MIT
 	// The spec file should exist in the output.
 	renderedSpecPath := results.GetProjectOutputPath("SPECS", "golang-example", "golang-example.spec")
 	require.FileExists(t, renderedSpecPath,
-		"Spec should be rendered via mock fallback")
+		"Spec should be rendered via mock processing")
 
 	// The rendered spec should have rpmautospec headers (macros were processed).
 	content, err := os.ReadFile(renderedSpecPath)
