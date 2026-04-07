@@ -672,11 +672,8 @@ func removeUnreferencedFiles(fs opctx.FS, tempDir, specPath string, specFiles []
 		)
 
 		if removeErr := fs.RemoveAll(removePath); removeErr != nil {
-			slog.Warn("Failed to remove filtered file",
-				"component", componentName,
-				"file", entry.Name(),
-				"error", removeErr,
-			)
+			return fmt.Errorf("failed to remove filtered file %#q for component %#q:\n%w",
+				entry.Name(), componentName, removeErr)
 		}
 	}
 

@@ -20,8 +20,8 @@ The staging directory must contain an ``inputs.json`` file listing components::
 Output (stdout, JSON array)::
 
     [
-      {"name": "curl", "specFiles": ["curl-8.5.0.tar.xz"], "error": null},
-      {"name": "broken", "specFiles": [], "error": "rpmautospec failed: ..."}
+      {"name": "curl", "specFiles": "Source0: curl-8.5.0.tar.xz\\nPatch0: fix.patch", "error": null},
+      {"name": "broken", "specFiles": "", "error": "rpmautospec failed: ..."}
     ]
 """
 

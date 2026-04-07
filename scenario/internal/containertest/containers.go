@@ -401,14 +401,6 @@ func (ws *delayStrategy) WaitUntilReady(ctx context.Context, target wait.Strateg
 	return err
 }
 
-// String returns a human-readable description of the custom wait strategy.
-func (ws *delayStrategy) String() string {
-	return fmt.Sprintf(
-		"custom nested delay strategy with nested strategy of type %T and extra delay",
-		ws.nestedWaitStrategy,
-	)
-}
-
 func getTimeoutConfig(t *testing.T, timeout time.Duration) *delayStrategy {
 	t.Helper()
 

@@ -303,11 +303,13 @@ func writeInputsManifest(fs opctx.FS, stagingDir string, inputs []ComponentInput
 }
 
 // Destroy cleans up the mock chroot. Should be called when rendering is complete.
+// Attempts cleanup even if initialization partially failed (e.g., InitRoot succeeded
+// but InstallPackages failed), since a partially initialized chroot still needs scrubbing.
 func (p *MockProcessor) Destroy(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.runner != nil && p.initialized && p.initErr == nil {
+	if p.runner != nil && p.initialized {
 		slog.Debug("Destroying mock chroot")
 
 		if err := p.runner.ScrubRoot(ctx); err != nil {

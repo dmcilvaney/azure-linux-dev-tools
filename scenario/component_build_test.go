@@ -144,7 +144,7 @@ func TestBuildingUpstreamComponent(t *testing.T) {
 	// on them.
 	//
 
-	const releaseRegexStr = `^\d+\.azl3$`
+	const releaseRegexStr = `^\d+\.azl4$`
 
 	srpm := srpms[0]
 	assert.Equal(t, testComponentName, srpm.Name())
@@ -164,4 +164,5 @@ func TestBuildingUpstreamComponent(t *testing.T) {
 
 	require.Contains(t, rpmsByName, testComponentName)
 	require.Contains(t, rpmsByName, testComponentName+"-debuginfo")
+	require.Contains(t, rpmsByName, testComponentName+"-debugsource")
 }
