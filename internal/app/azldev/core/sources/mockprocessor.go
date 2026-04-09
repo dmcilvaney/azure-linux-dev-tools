@@ -56,6 +56,8 @@ type ComponentInput struct {
 type ComponentMockResult struct {
 	Name      string   // Component name
 	SpecFiles []string // Files listed by spectool (basenames/relative paths)
+	Release   string   // Resolved %autorelease value (empty if spec doesn't use it)
+	Changelog string   // Resolved %autochangelog text (empty if spec doesn't use it)
 	Error     error    // Non-nil if rpmautospec or spectool failed for this component
 }
 
@@ -243,6 +245,8 @@ type componentInputJSON struct {
 type componentResultJSON struct {
 	Name      string  `json:"name"`
 	SpecFiles string  `json:"specFiles"`
+	Release   string  `json:"release"`
+	Changelog string  `json:"changelog"`
 	Error     *string `json:"error"`
 }
 
@@ -280,6 +284,8 @@ func parseBatchJSON(stdout string, inputs []ComponentInput) ([]ComponentMockResu
 		}
 
 		results[idx].SpecFiles = spectool.ParseSpectoolOutput(compResult.SpecFiles)
+		results[idx].Release = compResult.Release
+		results[idx].Changelog = compResult.Changelog
 	}
 
 	return results, nil

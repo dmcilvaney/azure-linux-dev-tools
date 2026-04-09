@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -643,6 +644,15 @@ func finishComponentRender(
 			"mock processing failed for %#q:\n%w", componentName, mockResult.Error)
 	}
 
+	// Apply rpmautospec results (release number / changelog) as text replacements
+	// in the spec file. This replaces %autorelease and %autochangelog with their
+	// resolved values without injecting the Lua header that process-distgit adds.
+	if mockResult.Release != "" || mockResult.Changelog != "" {
+		if autospecErr := applyAutospecResults(env.FS(), specPath, mockResult); autospecErr != nil {
+			return fmt.Errorf("applying rpmautospec results for %#q:\n%w", componentName, autospecErr)
+		}
+	}
+
 	// Filter files using spectool result from batch mock.
 	if filterErr := removeUnreferencedFiles(
 		env.FS(), componentDir, specPath, mockResult.SpecFiles, componentName,
@@ -664,6 +674,40 @@ func finishComponentRender(
 
 	slog.Info("Rendered component", "component", componentName,
 		"output", filepath.Join(baseOutputDir, componentName))
+
+	return nil
+}
+
+// autoreleaseLine matches a "Release:" line containing %autorelease (with optional
+// flags like -b, -e, -p). The entire line is replaced with the resolved release number.
+var autoreleaseLine = regexp.MustCompile(`(?m)^(Release:\s*)%autorelease\b[^\n]*$`)
+
+// applyAutospecResults replaces %autorelease and %autochangelog in the spec file
+// with the values resolved by rpmautospec inside the mock chroot. This avoids using
+// rpmautospec process-distgit, which injects a Lua header into the rendered spec.
+func applyAutospecResults(
+	fs opctx.FS,
+	specPath string,
+	mockResult *sources.ComponentMockResult,
+) error {
+	data, err := fileutils.ReadFile(fs, specPath)
+	if err != nil {
+		return fmt.Errorf("reading spec file:\n%w", err)
+	}
+
+	content := string(data)
+
+	if mockResult.Release != "" {
+		content = autoreleaseLine.ReplaceAllString(content, "${1}"+mockResult.Release)
+	}
+
+	if mockResult.Changelog != "" {
+		content = strings.Replace(content, "%autochangelog", mockResult.Changelog, 1)
+	}
+
+	if writeErr := fileutils.WriteFile(fs, specPath, []byte(content), fileperms.PublicFile); writeErr != nil {
+		return fmt.Errorf("writing spec file:\n%w", writeErr)
+	}
 
 	return nil
 }

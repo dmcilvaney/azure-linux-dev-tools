@@ -37,6 +37,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 def process_component(staging_dir: str, name: str, spec_filename: str) -> dict:
     """Run rpmautospec + spectool for a single component, returning a result dict.
 
+    Instead of ``rpmautospec process-distgit`` (which injects a Lua header into
+    the rendered spec), we call ``calculate-release`` and ``generate-changelog``
+    separately. The Go caller applies the results as simple text replacements,
+    producing a clean rendered spec without rpmautospec artifacts.
+
     Trust boundary: name and spec_filename are validated by BatchProcess in
     mockprocessor.go (validateComponentInput rejects path separators, empty
     values, and non-basename spec filenames) before this script is invoked.
@@ -44,19 +49,53 @@ def process_component(staging_dir: str, name: str, spec_filename: str) -> dict:
     comp_dir = os.path.join(staging_dir, name)
     spec_path = os.path.join(comp_dir, spec_filename)
 
-    # rpmautospec: expand %autorelease / %autochangelog in-place.
-    rpa_result = subprocess.run(
-        ["rpmautospec", "process-distgit", spec_path, spec_path],
-        capture_output=True,
-        text=True,
-    )
+    result = {
+        "name": name,
+        "specFiles": "",
+        "release": "",
+        "changelog": "",
+        "error": None,
+    }
 
-    if rpa_result.returncode != 0:
-        return {
-            "name": name,
-            "specFiles": "",
-            "error": f"rpmautospec failed: {rpa_result.stderr.strip()}",
-        }
+    # Read the spec to check for %autorelease / %autochangelog.
+    with open(spec_path) as f:
+        spec_text = f.read()
+
+    has_autorelease = "%autorelease" in spec_text
+    has_autochangelog = "%autochangelog" in spec_text
+
+    if has_autorelease:
+        calc = subprocess.run(
+            ["rpmautospec", "calculate-release", "-n", spec_path],
+            capture_output=True,
+            text=True,
+        )
+
+        if calc.returncode != 0:
+            result["error"] = (
+                f"rpmautospec calculate-release failed: {calc.stderr.strip()}"
+            )
+            return result
+
+        # Output is "Calculated release number: 63" — extract just the number.
+        release_output = calc.stdout.strip()
+        _, _, release_value = release_output.rpartition(":")
+        result["release"] = release_value.strip()
+
+    if has_autochangelog:
+        chlog = subprocess.run(
+            ["rpmautospec", "generate-changelog", spec_path],
+            capture_output=True,
+            text=True,
+        )
+
+        if chlog.returncode != 0:
+            result["error"] = (
+                f"rpmautospec generate-changelog failed: {chlog.stderr.strip()}"
+            )
+            return result
+
+        result["changelog"] = chlog.stdout.strip()
 
     # spectool: list source and patch files.
     st_result = subprocess.run(
@@ -73,13 +112,12 @@ def process_component(staging_dir: str, name: str, spec_filename: str) -> dict:
     )
 
     if st_result.returncode != 0:
-        return {
-            "name": name,
-            "specFiles": "",
-            "error": f"spectool failed: {st_result.stderr.strip()}",
-        }
+        result["error"] = f"spectool failed: {st_result.stderr.strip()}"
+        return result
 
-    return {"name": name, "specFiles": st_result.stdout.strip(), "error": None}
+    result["specFiles"] = st_result.stdout.strip()
+
+    return result
 
 
 def main() -> int:
