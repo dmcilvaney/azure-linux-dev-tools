@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -372,8 +373,12 @@ func (env *Env) ValidateLockFile() error {
 		return nil
 	}
 
-	if err := lock.ValidateAllUpstreamComponents(upstreamConfigs); err != nil {
-		env.SetFixSuggestion("run 'azldev component update -a' to update the lock file")
+	failedComponents, err := lock.ValidateAllUpstreamComponents(upstreamConfigs)
+	if err != nil {
+		sort.Strings(failedComponents)
+
+		componentArgs := strings.Join(failedComponents, " ")
+		env.SetFixSuggestion(fmt.Sprintf("run 'azldev component update %s'", componentArgs))
 
 		return fmt.Errorf("lock file validation failed:\n%w", err)
 	}

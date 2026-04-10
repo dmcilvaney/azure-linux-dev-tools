@@ -133,19 +133,23 @@ func (lockFile *LockFile) ValidateUpstreamCommit(componentName, configUpstreamCo
 //
 // componentConfigs is a map of component name → upstream-commit from config
 // (empty string if not pinned). Only upstream components should be included.
-func (lockFile *LockFile) ValidateAllUpstreamComponents(componentConfigs map[string]string) error {
+// Returns a list of component names that failed validation alongside the error.
+func (lockFile *LockFile) ValidateAllUpstreamComponents(
+	componentConfigs map[string]string,
+) (failedComponents []string, err error) {
 	var errs []string
 
 	for name, configCommit := range componentConfigs {
-		if _, err := lockFile.ValidateUpstreamCommit(name, configCommit); err != nil {
-			errs = append(errs, err.Error())
+		if _, validateErr := lockFile.ValidateUpstreamCommit(name, configCommit); validateErr != nil {
+			failedComponents = append(failedComponents, name)
+			errs = append(errs, validateErr.Error())
 		}
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("lock file validation failed for %d component(s):\n  %s",
+		return failedComponents, fmt.Errorf("lock file validation failed for %d component(s):\n  %s",
 			len(errs), strings.Join(errs, "\n  "))
 	}
 
-	return nil
+	return nil, nil
 }
