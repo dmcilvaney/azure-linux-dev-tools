@@ -150,3 +150,32 @@ func TestSaveContainsVersion(t *testing.T) {
 	assert.Contains(t, string(data), "version = 1")
 	assert.Contains(t, string(data), "# azldev.lock")
 }
+
+func TestValidateUpstreamCommit(t *testing.T) {
+	lockFile := lockfile.New()
+	lockFile.SetUpstreamCommit("curl", "aaaa")
+
+	t.Run("ValidEntryNoConfigPin", func(t *testing.T) {
+		commit, err := lockFile.ValidateUpstreamCommit("curl", "")
+		require.NoError(t, err)
+		assert.Equal(t, "aaaa", commit)
+	})
+
+	t.Run("ValidEntryMatchingConfigPin", func(t *testing.T) {
+		commit, err := lockFile.ValidateUpstreamCommit("curl", "aaaa")
+		require.NoError(t, err)
+		assert.Equal(t, "aaaa", commit)
+	})
+
+	t.Run("MissingEntry", func(t *testing.T) {
+		_, err := lockFile.ValidateUpstreamCommit("nonexistent", "")
+		require.ErrorContains(t, err, "no lock entry")
+		assert.ErrorContains(t, err, "component update")
+	})
+
+	t.Run("StaleConfigPin", func(t *testing.T) {
+		_, err := lockFile.ValidateUpstreamCommit("curl", "bbbb")
+		require.ErrorContains(t, err, "lock file is stale")
+		assert.ErrorContains(t, err, "component update")
+	})
+}

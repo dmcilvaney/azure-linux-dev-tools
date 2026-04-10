@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/charmbracelet/x/term"
@@ -57,7 +56,7 @@ func RunFunc(innerFunc CmdFuncType) cobraRunFuncType {
 		}
 
 		return innerFunc(env)
-	}, true)
+	}, true, false)
 }
 
 // Returns a function usable by an azldev command as a [cobra.Command] 'RunE' function. Rejects all
@@ -72,7 +71,7 @@ func RunFuncWithoutRequiredConfig(innerFunc CmdFuncType) cobraRunFuncType {
 		}
 
 		return innerFunc(env)
-	}, false)
+	}, false, true)
 }
 
 // Returns a function usable by an azldev command as a `cobra.Command` 'RunE' function.
@@ -81,7 +80,14 @@ func RunFuncWithoutRequiredConfig(innerFunc CmdFuncType) cobraRunFuncType {
 // the opaque result value returned by the inner function. Fails early if no
 // project/configuration was loaded.
 func RunFuncWithExtraArgs(innerFunc CmdWithExtraArgsFuncType) cobraRunFuncType {
-	return runFuncInternal(innerFunc, true)
+	return runFuncInternal(innerFunc, true, false)
+}
+
+// RunFuncWithExtraArgsSkipLockValidation is like [RunFuncWithExtraArgs] but skips
+// lock file validation. Use this only for commands that create or update the lock
+// file (e.g., 'component update').
+func RunFuncWithExtraArgsSkipLockValidation(innerFunc CmdWithExtraArgsFuncType) cobraRunFuncType {
+	return runFuncInternal(innerFunc, true, true)
 }
 
 // Returns a function usable by an azldev command as a [cobra.Command] 'RunE' function.
@@ -90,10 +96,10 @@ func RunFuncWithExtraArgs(innerFunc CmdWithExtraArgsFuncType) cobraRunFuncType {
 // the opaque result value returned by the inner function. Does *not* require valid
 // project/configuration to have been loaded.
 func RunFuncWithoutRequiredConfigWithExtraArgs(innerFunc CmdWithExtraArgsFuncType) cobraRunFuncType {
-	return runFuncInternal(innerFunc, false)
+	return runFuncInternal(innerFunc, false, true)
 }
 
-func runFuncInternal(innerFunc CmdWithExtraArgsFuncType, requireConfig bool) cobraRunFuncType {
+func runFuncInternal(innerFunc CmdWithExtraArgsFuncType, requireConfig bool, skipLockValidation bool) cobraRunFuncType {
 	return func(command *cobra.Command, args []string) error {
 		// If we got down here, then make sure we don't display usage unless we are certain
 		// it's a usage error.
@@ -105,16 +111,21 @@ func runFuncInternal(innerFunc CmdWithExtraArgsFuncType, requireConfig bool) cob
 		}
 
 		if requireConfig && (env.Config() == nil || env.ProjectDir() == "") {
-			slog.Warn(
-				"!!! Unable to find and load valid Azure Linux project configuration.\n\n" +
-					"Please either use the -C option to specify a path to the root directory " +
-					"of your Azure Linux project/repo, or else run this tool from within a directory " +
-					"tree that contains an 'azldev.toml' file at its root.\n\n" +
-					"Most commands will not function correctly without a valid configuration.\n\n" +
-					"------------------------------------------------------------------\n",
-			)
+			env.SetFixSuggestion(
+				"ensure you are running from within an Azure Linux project directory" +
+					" (containing an 'azldev.toml' file), or use -C to specify the project path")
 
-			return errors.New("a valid project and configuration are required to execute this command")
+			return fmt.Errorf(
+				"a valid project and configuration are required to execute this command")
+		}
+
+		// Validate lock file consistency for commands that consume locked state.
+		// Commands that create/update the lock file (e.g., 'component update')
+		// pass skipLockValidation=true to bypass this check.
+		if requireConfig && !skipLockValidation {
+			if lockErr := env.ValidateLockFile(); lockErr != nil {
+				return lockErr
+			}
 		}
 
 		results, err := innerFunc(env, args)

@@ -8,14 +8,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/gum/confirm"
+	"github.com/charmbracelet/x/term"
 	"github.com/mattn/go-isatty"
 	"github.com/microsoft/azure-linux-dev-tools/internal/global/opctx"
+	"github.com/microsoft/azure-linux-dev-tools/internal/lockfile"
 	"github.com/microsoft/azure-linux-dev-tools/internal/projectconfig"
 )
 
@@ -77,6 +82,10 @@ type Env struct {
 
 	// Deserialized project-specific configuration.
 	config *projectconfig.ProjectConfig
+
+	// Fix suggestion: a human-readable hint printed after errors to help the
+	// user resolve the issue (last write wins).
+	fixSuggestion string
 
 	// Top-level context.
 	//nolint:containedctx // We embed a context so we don't have to pass it *and* the env around everywhere.
@@ -276,6 +285,100 @@ func (env *Env) LogsDir() string {
 // Returns the file path to the loaded project's output directory.
 func (env *Env) OutputDir() string {
 	return env.outputDir
+}
+
+// CPUBoundConcurrency returns the recommended concurrency limit for CPU-bound tasks.
+// Returns [runtime.NumCPU], minimum 1.
+func (env *Env) CPUBoundConcurrency() int {
+	return max(1, runtime.NumCPU())
+}
+
+// IOBoundConcurrency returns the recommended concurrency limit for I/O-bound tasks
+// (network clones, file copies). Returns 2× [runtime.NumCPU], minimum 1.
+func (env *Env) IOBoundConcurrency() int {
+	return max(1, 2*runtime.NumCPU()) //nolint:mnd // 2x CPU
+}
+
+// FastConcurrency returns the recommended concurrency limit for tasks that can benefit from higher parallelism.
+// Returns 4× [runtime.NumCPU], minimum 1.
+func (env *Env) FastConcurrency() int {
+	return max(1, 4*runtime.NumCPU()) //nolint:mnd // 4x CPU
+}
+
+// SetFixSuggestion records a human-readable hint that will be printed after an
+// error to help the user resolve the issue. Last write wins — only the most
+// recent suggestion is shown.
+func (env *Env) SetFixSuggestion(suggestion string) {
+	env.fixSuggestion = suggestion
+}
+
+// PrintFixSuggestion prints the current fix suggestion, if any.
+func (env *Env) PrintFixSuggestion() {
+	if env.fixSuggestion != "" {
+		// Use term.GetSize to guess at the width, defaulting to 80 if it fails
+		// Subtract 15 to account for the slog head
+		const slogHeadWidth = 15
+
+		consoleWidth, _, err := term.GetSize(os.Stderr.Fd())
+		if err != nil {
+			consoleWidth = 80
+		}
+
+		consoleWidth -= slogHeadWidth
+
+		padding := "    "
+		paddingSize := len(padding)
+
+		boxWidth := min(consoleWidth, paddingSize+len(env.fixSuggestion)+paddingSize)
+		boxEdgeString := strings.Repeat("=", boxWidth)
+
+		slog.Warn(boxEdgeString)
+		slog.Warn(padding + env.fixSuggestion)
+		slog.Warn(boxEdgeString)
+	}
+}
+
+// ValidateLockFile checks that all upstream components in the project config have
+// consistent lock file entries. Returns nil if no lock file exists (first run) or
+// if all upstream components are properly locked. Returns an error if any upstream
+// component is missing from the lock or has a stale pinned commit.
+func (env *Env) ValidateLockFile() error {
+	if env.projectDir == "" || env.config == nil {
+		return nil
+	}
+
+	lockPath := filepath.Join(env.projectDir, lockfile.FileName)
+
+	lock, err := lockfile.Load(env.FS(), lockPath)
+	if err != nil {
+		// No lock file yet — skip validation. The user needs to run
+		// 'component update' first, but we don't want to block every
+		// command before the lock file is bootstrapped.
+		slog.Debug("No lock file found, skipping validation", "error", err)
+
+		return nil
+	}
+
+	// Collect upstream components and their config-pinned commits.
+	upstreamConfigs := make(map[string]string)
+
+	for name, comp := range env.config.Components {
+		if comp.Spec.SourceType == projectconfig.SpecSourceTypeUpstream {
+			upstreamConfigs[name] = comp.Spec.UpstreamCommit
+		}
+	}
+
+	if len(upstreamConfigs) == 0 {
+		return nil
+	}
+
+	if err := lock.ValidateAllUpstreamComponents(upstreamConfigs); err != nil {
+		env.SetFixSuggestion("run 'azldev component update -a' to update the lock file")
+
+		return fmt.Errorf("lock file validation failed:\n%w", err)
+	}
+
+	return nil
 }
 
 // Enables or disables "accept all prompts" mode.

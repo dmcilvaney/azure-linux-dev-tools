@@ -8,6 +8,7 @@ package lockfile
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/microsoft/azure-linux-dev-tools/internal/global/opctx"
 	"github.com/microsoft/azure-linux-dev-tools/internal/utils/fileperms"
@@ -101,4 +102,50 @@ func (lockFile *LockFile) GetUpstreamCommit(componentName string) (string, bool)
 	}
 
 	return entry.UpstreamCommit, true
+}
+
+// ValidateUpstreamCommit checks that an upstream component has a consistent lock
+// entry. Returns an error if:
+//   - The component has no lock entry (run 'component update' first)
+//   - The component has an explicit 'upstream-commit' in config that doesn't match
+//     the lock file (lock is stale, run 'component update')
+func (lockFile *LockFile) ValidateUpstreamCommit(componentName, configUpstreamCommit string) (string, error) {
+	locked, hasEntry := lockFile.GetUpstreamCommit(componentName)
+	if !hasEntry {
+		return "", fmt.Errorf(
+			"no lock entry for upstream component %#q; run 'azldev component update %s'",
+			componentName, componentName)
+	}
+
+	if configUpstreamCommit != "" && locked != configUpstreamCommit {
+		return "", fmt.Errorf(
+			"lock file is stale for %#q: config pins %#q but lock has %#q; "+
+				"run 'azldev component update %s'",
+			componentName, configUpstreamCommit, locked, componentName)
+	}
+
+	return locked, nil
+}
+
+// ValidateAllUpstreamComponents checks that every upstream component has a
+// consistent lock entry. Call this from commands that consume the lock file
+// (render, build) — but NOT from 'update', which creates entries.
+//
+// componentConfigs is a map of component name → upstream-commit from config
+// (empty string if not pinned). Only upstream components should be included.
+func (lockFile *LockFile) ValidateAllUpstreamComponents(componentConfigs map[string]string) error {
+	var errs []string
+
+	for name, configCommit := range componentConfigs {
+		if _, err := lockFile.ValidateUpstreamCommit(name, configCommit); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("lock file validation failed for %d component(s):\n  %s",
+			len(errs), strings.Join(errs, "\n  "))
+	}
+
+	return nil
 }

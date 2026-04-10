@@ -103,6 +103,17 @@ func (f ConfigFile) Validate() error {
 		if err := validateSourceFiles(component.SourceFiles, componentName); err != nil {
 			return err
 		}
+
+		// Per-component snapshot timestamps are not allowed. Components inherit
+		// the snapshot from the global/group distro config, or use an explicit
+		// 'upstream-commit' pin. Per-component snapshots create non-deterministic
+		// builds that the lock file cannot reliably track.
+		if component.Spec.UpstreamDistro.Snapshot != "" {
+			return fmt.Errorf(
+				"component %#q has a per-component 'snapshot' on 'upstream-distro'; "+
+					"use the global distro snapshot or set 'upstream-commit' instead",
+				componentName)
+		}
 	}
 
 	return nil
