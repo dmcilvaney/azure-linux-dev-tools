@@ -479,10 +479,46 @@ func (r *Resolver) createComponentFromConfig(componentConfig *projectconfig.Comp
 		componentConfig.Release.Calculation = projectconfig.ReleaseCalculationAuto
 	}
 
+	// Populate locked state onto the component config. This makes lock data
+	// available to all downstream consumers (render, build, prepare-sources,
+	// diff-sources) without each needing lock-file awareness.
+	r.populateFromLock(componentConfig)
+
 	return &resolvedComponent{
 		env:    r.env,
 		config: *componentConfig,
 	}, nil
+}
+
+// populateFromLock reads lock file data and attaches it to the component config
+// as [projectconfig.ComponentLockData]. This centralizes lock-file consumption so
+// all downstream commands (render, build, prepare-sources, diff-sources) get
+// locked state automatically via config.Locked.
+//
+// IMPORTANT: This must NEVER overwrite user-specified config values. Lock data
+// goes into the separate Locked field, preserving the manifest/lock boundary:
+// Spec.UpstreamCommit = user intent, Locked.UpstreamCommit = resolved reality.
+func (r *Resolver) populateFromLock(config *projectconfig.ComponentConfig) {
+	reader := r.env.LockReader()
+	if reader == nil {
+		return
+	}
+
+	lock, err := reader.Get(config.Name)
+	if err != nil {
+		// No lock file or unreadable — nothing to populate.
+		// Structural validation (if enabled) will catch missing locks separately.
+		return
+	}
+
+	config.Locked = &projectconfig.ComponentLockData{
+		UpstreamCommit:   lock.UpstreamCommit,
+		ImportCommit:     lock.ImportCommit,
+		ManualBump:       lock.ManualBump,
+		InputFingerprint: lock.InputFingerprint,
+	}
+
+	slog.Debug("Populated lock data", "component", config.Name, "commit", lock.UpstreamCommit)
 }
 
 // Given an explicit component config, apply all inherited defaults.
