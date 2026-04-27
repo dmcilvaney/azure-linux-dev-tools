@@ -149,6 +149,38 @@ type ReleaseConfig struct {
 	Calculation ReleaseCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto manual" jsonschema:"enum=auto,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
 }
 
+// FreshnessStatus indicates whether a component's current config matches
+// its locked state. Computed at resolve time when freshness checking is
+// enabled; [FreshnessUnknown] otherwise.
+type FreshnessStatus int
+
+const (
+	// FreshnessUnknown means freshness was not computed (no lock, no stored
+	// fingerprint, or freshness checking not requested).
+	FreshnessUnknown FreshnessStatus = iota
+	// FreshnessCurrent means the recomputed fingerprint matches the lock's
+	// InputFingerprint — the component's render inputs have not changed.
+	FreshnessCurrent
+	// FreshnessStale means the recomputed fingerprint differs from the lock's
+	// InputFingerprint — config, overlays, or other inputs changed since the
+	// last update.
+	FreshnessStale
+)
+
+// String returns a human-readable label for the freshness status.
+func (f FreshnessStatus) String() string {
+	switch f {
+	case FreshnessUnknown:
+		return "unknown"
+	case FreshnessCurrent:
+		return "current"
+	case FreshnessStale:
+		return "stale"
+	}
+
+	return "unknown"
+}
+
 // ComponentLockData holds resolved lock file state attached to a component at
 // resolve time. This separates user intent (config fields) from resolved reality
 // (lock data). Populated by the component resolver from the lock store; nil when
@@ -165,7 +197,22 @@ type ComponentLockData struct {
 	// ManualBump is the extra rebuild counter.
 	ManualBump int `json:"manualBump,omitempty"`
 	// InputFingerprint is the stored fingerprint from the last update.
+	// Covers build inputs (config, overlays, commit, manual bump, release ver)
+	// but excludes resolution inputs like snapshot timestamp.
 	InputFingerprint string `json:"inputFingerprint,omitempty"`
+	// ResolutionInputHash is the stored hash of resolution inputs (snapshot,
+	// distro reference, explicit pin). Used to detect when upstream resolution
+	// needs to be re-run.
+	ResolutionInputHash string `json:"resolutionInputHash,omitempty"`
+	// Freshness indicates whether the component's current config matches the
+	// locked fingerprint. Computed by the resolver when freshness checking is
+	// enabled; [FreshnessUnknown] otherwise.
+	Freshness FreshnessStatus `json:"freshness,omitempty"`
+	// ResolutionStale is true when the resolution input hash differs from
+	// the stored value (e.g., snapshot changed). When Freshness is
+	// [FreshnessStale] and ResolutionStale is false, only build inputs
+	// changed — the locked upstream commit can be reused without network.
+	ResolutionStale bool `json:"resolutionStale,omitempty"`
 }
 
 // EffectiveUpstreamCommit returns the commit to use for upstream operations.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/components"
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/testutils"
+	"github.com/microsoft/azure-linux-dev-tools/internal/fingerprint"
 	"github.com/microsoft/azure-linux-dev-tools/internal/lockfile"
 	"github.com/microsoft/azure-linux-dev-tools/internal/projectconfig"
 	"github.com/microsoft/azure-linux-dev-tools/internal/utils/fileperms"
@@ -17,6 +18,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testUpstreamCommit is a placeholder commit hash used across freshness tests.
+const testUpstreamCommit = "abc123"
 
 func touchFile(t *testing.T, testEnv *testutils.TestEnv, path string) {
 	t.Helper()
@@ -815,4 +819,262 @@ func TestFindComponents_LocalComponentNoLockPopulation(t *testing.T) {
 	require.True(t, ok)
 
 	assert.Nil(t, comp.GetConfig().Locked, "local components should not have lock data")
+}
+
+// computeTestFingerprint resolves inherited defaults (same as the resolver)
+// and then computes the fingerprint. This ensures the test lock matches what
+// the resolver will produce at runtime.
+func computeTestFingerprint(
+	t *testing.T, env *testutils.TestEnv, config projectconfig.ComponentConfig,
+) string {
+	t.Helper()
+
+	resolved := resolveTestDefaults(t, env, config)
+
+	_, distroVer, err := env.Env.Distro()
+	require.NoError(t, err)
+
+	identity, fpErr := fingerprint.ComputeIdentity(
+		env.TestFS,
+		resolved,
+		distroVer.ReleaseVer,
+		fingerprint.IdentityOptions{
+			SourceIdentity: testUpstreamCommit,
+		},
+	)
+	require.NoError(t, fpErr)
+
+	return identity.Fingerprint
+}
+
+// computeTestResolutionHash resolves inherited defaults and computes the
+// resolution input hash matching what the resolver produces.
+func computeTestResolutionHash(
+	t *testing.T, env *testutils.TestEnv, config projectconfig.ComponentConfig,
+) string {
+	t.Helper()
+
+	resolved := resolveTestDefaults(t, env, config)
+
+	return fingerprint.ComputeResolutionHash(resolved)
+}
+
+// resolveTestDefaults applies the same inherited defaults and fallbacks that
+// the resolver applies, so test fingerprints match runtime computation.
+func resolveTestDefaults(
+	t *testing.T, env *testutils.TestEnv, config projectconfig.ComponentConfig,
+) projectconfig.ComponentConfig {
+	t.Helper()
+
+	_, distroVer, err := env.Env.Distro()
+	require.NoError(t, err)
+
+	resolved, resolveErr := projectconfig.ResolveComponentConfig(
+		config,
+		env.Config.DefaultComponentConfig,
+		distroVer.DefaultComponentConfig,
+		env.Config.ComponentGroups,
+		env.Config.GroupsByComponent[config.Name],
+	)
+	require.NoError(t, resolveErr)
+
+	if resolved.Release.Calculation == "" {
+		resolved.Release.Calculation = projectconfig.ReleaseCalculationAuto
+	}
+
+	return resolved
+}
+
+// When CheckFreshness is enabled and both the fingerprint and resolution hash
+// match the lock, the component should be marked FreshnessCurrent.
+func TestFindComponents_FreshnessCurrent(t *testing.T) {
+	env := testutils.NewTestEnv(t)
+
+	config := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{SourceType: projectconfig.SpecSourceTypeUpstream},
+	}
+	env.Config.Components["curl"] = config
+
+	fp := computeTestFingerprint(t, env, config)
+	resHash := computeTestResolutionHash(t, env, config)
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testUpstreamCommit
+	lock.InputFingerprint = fp
+	lock.ResolutionInputHash = resHash
+
+	env.WriteLock(t, "curl", lock)
+
+	resolver := components.NewResolver(env.Env)
+	resolver.CheckFreshness = true
+
+	resolved, err := resolver.FindComponents(&components.ComponentFilter{IncludeAllComponents: true})
+	require.NoError(t, err)
+
+	comp, ok := resolved.TryGet("curl")
+	require.True(t, ok)
+	require.NotNil(t, comp.GetConfig().Locked)
+
+	assert.Equal(t, projectconfig.FreshnessCurrent, comp.GetConfig().Locked.Freshness,
+		"both hashes match → should be FreshnessCurrent")
+	assert.False(t, comp.GetConfig().Locked.ResolutionStale,
+		"resolution hash matches → ResolutionStale should be false")
+}
+
+// When the config has changed (e.g., build option added) but the lock hasn't
+// been updated, the component should be marked FreshnessStale.
+func TestFindComponents_FreshnessStale_BuildInputChanged(t *testing.T) {
+	env := testutils.NewTestEnv(t)
+
+	oldConfig := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{SourceType: projectconfig.SpecSourceTypeUpstream},
+	}
+	fp := computeTestFingerprint(t, env, oldConfig)
+	resHash := computeTestResolutionHash(t, env, oldConfig)
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testUpstreamCommit
+	lock.InputFingerprint = fp
+	lock.ResolutionInputHash = resHash
+
+	env.WriteLock(t, "curl", lock)
+
+	// Register CURRENT config with an added build option.
+	newConfig := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{SourceType: projectconfig.SpecSourceTypeUpstream},
+		Build: projectconfig.ComponentBuildConfig{
+			With: []string{"ssl"},
+		},
+	}
+	env.Config.Components["curl"] = newConfig
+
+	resolver := components.NewResolver(env.Env)
+	resolver.CheckFreshness = true
+
+	resolved, err := resolver.FindComponents(&components.ComponentFilter{IncludeAllComponents: true})
+	require.NoError(t, err)
+
+	comp, ok := resolved.TryGet("curl")
+	require.True(t, ok)
+	require.NotNil(t, comp.GetConfig().Locked)
+
+	assert.Equal(t, projectconfig.FreshnessStale, comp.GetConfig().Locked.Freshness,
+		"build input changed → should be FreshnessStale")
+	assert.False(t, comp.GetConfig().Locked.ResolutionStale,
+		"resolution inputs unchanged → ResolutionStale should be false")
+}
+
+// When the snapshot changes but fingerprint would match, resolution hash
+// catches the staleness. This is the key scenario for snapshot bumps.
+func TestFindComponents_FreshnessStale_SnapshotChanged(t *testing.T) {
+	env := testutils.NewTestEnv(t)
+
+	config := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{
+			SourceType: projectconfig.SpecSourceTypeUpstream,
+			UpstreamDistro: projectconfig.DistroReference{
+				Snapshot: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+	env.Config.Components["curl"] = config
+
+	fp := computeTestFingerprint(t, env, config)
+	resHash := computeTestResolutionHash(t, env, config)
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testUpstreamCommit
+	lock.InputFingerprint = fp
+	lock.ResolutionInputHash = resHash
+
+	env.WriteLock(t, "curl", lock)
+
+	// Bump snapshot in the registered config.
+	config.Spec.UpstreamDistro.Snapshot = "2026-06-15T00:00:00Z"
+	env.Config.Components["curl"] = config
+
+	resolver := components.NewResolver(env.Env)
+	resolver.CheckFreshness = true
+
+	resolved, err := resolver.FindComponents(&components.ComponentFilter{IncludeAllComponents: true})
+	require.NoError(t, err)
+
+	comp, ok := resolved.TryGet("curl")
+	require.True(t, ok)
+	require.NotNil(t, comp.GetConfig().Locked)
+
+	assert.Equal(t, projectconfig.FreshnessStale, comp.GetConfig().Locked.Freshness,
+		"snapshot changed → resolution hash differs → should be FreshnessStale")
+	assert.True(t, comp.GetConfig().Locked.ResolutionStale,
+		"snapshot changed → ResolutionStale should be true")
+}
+
+// When CheckFreshness is NOT enabled, Freshness stays Unknown even with
+// a valid lock and fingerprint.
+func TestFindComponents_FreshnessUnknownByDefault(t *testing.T) {
+	env := testutils.NewTestEnv(t)
+
+	config := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{SourceType: projectconfig.SpecSourceTypeUpstream},
+	}
+	env.Config.Components["curl"] = config
+
+	fp := computeTestFingerprint(t, env, config)
+	resHash := computeTestResolutionHash(t, env, config)
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testUpstreamCommit
+	lock.InputFingerprint = fp
+	lock.ResolutionInputHash = resHash
+
+	env.WriteLock(t, "curl", lock)
+
+	// Default resolver — CheckFreshness NOT set.
+	resolver := components.NewResolver(env.Env)
+
+	resolved, err := resolver.FindComponents(&components.ComponentFilter{IncludeAllComponents: true})
+	require.NoError(t, err)
+
+	comp, ok := resolved.TryGet("curl")
+	require.True(t, ok)
+	require.NotNil(t, comp.GetConfig().Locked)
+
+	assert.Equal(t, projectconfig.FreshnessUnknown, comp.GetConfig().Locked.Freshness,
+		"CheckFreshness not set → should remain FreshnessUnknown")
+}
+
+// When the lock exists but has no InputFingerprint (e.g., legacy lock from
+// before fingerprint support), freshness stays Unknown even with CheckFreshness.
+func TestFindComponents_FreshnessUnknownNoFingerprint(t *testing.T) {
+	env := testutils.NewTestEnv(t)
+
+	config := projectconfig.ComponentConfig{
+		Name: "curl",
+		Spec: projectconfig.SpecSource{SourceType: projectconfig.SpecSourceTypeUpstream},
+	}
+	env.Config.Components["curl"] = config
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testUpstreamCommit
+	// InputFingerprint intentionally left empty.
+
+	env.WriteLock(t, "curl", lock)
+
+	resolver := components.NewResolver(env.Env)
+	resolver.CheckFreshness = true
+
+	resolved, err := resolver.FindComponents(&components.ComponentFilter{IncludeAllComponents: true})
+	require.NoError(t, err)
+
+	comp, ok := resolved.TryGet("curl")
+	require.True(t, ok)
+	require.NotNil(t, comp.GetConfig().Locked)
+
+	assert.Equal(t, projectconfig.FreshnessUnknown, comp.GetConfig().Locked.Freshness,
+		"no stored fingerprint → should remain FreshnessUnknown")
 }

@@ -74,9 +74,9 @@ func TestAllFingerprintedFieldsHaveDecision(t *testing.T) {
 		// SourceFileReference.Component — back-reference to parent, not a build input.
 		"SourceFileReference.Component": true,
 
-		// DistroReference.Snapshot — snapshot timestamp is not a build input; the resolved
-		// upstream commit hash (captured separately via SourceIdentity) is what matters.
-		// Excluding this prevents a snapshot bump from marking all upstream components as changed.
+		// DistroReference.Snapshot — resolution input, not a build input. The resolved
+		// upstream commit (via SourceIdentity) is what matters for build output.
+		// Tracked separately via ResolutionInputHash in the lock file.
 		"DistroReference.Snapshot": true,
 
 		// SourceFileReference.Origin — download location metadata (URI, type), not a build input.

@@ -94,6 +94,7 @@ type UpdateResult struct {
 // writes the results to per-component lock files under locks/.
 func UpdateComponents(env *azldev.Env, options *UpdateComponentOptions) ([]UpdateResult, error) {
 	resolver := components.NewResolver(env)
+	resolver.CheckFreshness = true
 
 	resolved, err := resolver.FindComponents(&options.ComponentFilter)
 	if err != nil {
@@ -161,11 +162,13 @@ func UpdateComponents(env *azldev.Env, options *UpdateComponentOptions) ([]Updat
 	return filterDisplayResults(results), nil
 }
 
-// saveComponentLocks recomputes fingerprints and writes lock files for all
-// resolved components. A lock file is saved when either the upstream commit
-// or the input fingerprint has changed. The fingerprint is recomputed on every
-// update, so config/overlay changes are detected even when the upstream commit
-// stays the same.
+// saveComponentLocks recomputes fingerprints and resolution hashes, then writes
+// lock files for resolved components. A lock file is written when either:
+//   - InputFingerprint changed (build-relevant input changed — marked Changed for display)
+//   - ResolutionInputHash changed (resolution input like snapshot changed — silent update)
+//
+// The Changed flag only tracks InputFingerprint changes, since that's what
+// determines whether downstream commands (render, build) need to re-run.
 func saveComponentLocks(env *azldev.Env, store *lockfile.Store, results []UpdateResult) error {
 	saved := make([]string, 0, len(results))
 
@@ -180,7 +183,7 @@ func saveComponentLocks(env *azldev.Env, store *lockfile.Store, results []Update
 	}()
 
 	for idx := range results {
-		if results[idx].Error != "" || results[idx].Skipped {
+		if results[idx].Error != "" || results[idx].config == nil {
 			continue
 		}
 
@@ -225,15 +228,21 @@ func saveComponentLocks(env *azldev.Env, store *lockfile.Store, results []Update
 		}
 
 		// Mark as changed if fingerprint differs (catches config/overlay edits
-		// even when the upstream commit is unchanged).
+		// even when the upstream commit is unchanged). This is the user-visible
+		// "changed" flag — it drives render/build skip decisions.
 		if lock.InputFingerprint != identity.Fingerprint {
 			results[idx].Changed = true
 		}
 
 		lock.InputFingerprint = identity.Fingerprint
 
-		// Only write if something actually changed.
-		if !results[idx].Changed {
+		// Update resolution input hash (snapshot, distro ref, pin).
+		resHash := fingerprint.ComputeResolutionHash(*results[idx].config)
+		resHashChanged := lock.ResolutionInputHash != resHash
+		lock.ResolutionInputHash = resHash
+
+		// Write if either hash changed.
+		if !results[idx].Changed && !resHashChanged {
 			continue
 		}
 
@@ -277,7 +286,7 @@ func checkUpdateErrors(results []UpdateResult) error {
 // logUpdateSummary logs the final update summary. Called after saveComponentLocks
 // so that Changed counts reflect fingerprint-only diffs.
 func logUpdateSummary(results []UpdateResult) {
-	var changed, skipped int
+	var changed, skipped, upToDate int
 
 	for idx := range results {
 		switch {
@@ -285,16 +294,21 @@ func logUpdateSummary(results []UpdateResult) {
 			skipped++
 		case results[idx].Changed:
 			changed++
+		default:
+			upToDate++
 		}
 	}
 
 	slog.Info("Update complete",
 		"total", len(results),
 		"changed", changed,
+		"upToDate", upToDate,
 		"skipped", skipped)
 }
 
 // filterDisplayResults returns changed and skipped results for table display.
+// Up-to-date components (not Changed, not Skipped) are excluded — they
+// represent the common "nothing to do" case and would dominate the output.
 func filterDisplayResults(results []UpdateResult) []UpdateResult {
 	var tableResults []UpdateResult
 
@@ -332,6 +346,42 @@ func resolveUpstreamCommitsParallel(
 			results[idx].SkipReason = fmt.Sprintf("source type %q is not upstream", sourceType)
 
 			continue
+		}
+
+		locked := comp.GetConfig().Locked
+
+		// Three-way freshness check:
+		//
+		// 1. FreshnessCurrent → nothing changed, skip entirely (no network).
+		// 2. FreshnessStale + resolution fresh → only build inputs changed
+		//    (e.g., overlay edit). Reuse locked commit (no network), but
+		//    enter save path to update the fingerprint.
+		// 3. FreshnessStale + resolution stale → resolution inputs changed
+		//    (e.g., snapshot bump). Must re-resolve upstream (network).
+		if locked != nil && locked.Freshness == projectconfig.FreshnessCurrent {
+			// Case 1: fully up-to-date.
+			results[idx].UpstreamCommit = locked.UpstreamCommit
+
+			continue
+		}
+
+		if locked != nil && locked.Freshness == projectconfig.FreshnessStale &&
+			!locked.ResolutionStale {
+			// Case 2: build inputs changed but resolution inputs unchanged.
+			// Reuse the locked commit — re-resolving would yield the same hash.
+			results[idx].UpstreamCommit = locked.UpstreamCommit
+			results[idx].config = comp.GetConfig()
+			// Changed will be set by saveComponentLocks when it detects the
+			// fingerprint diff.
+
+			continue
+		}
+
+		// Case 3: resolution stale, unknown, or no lock — must re-resolve.
+		// Clear locked commit so the source provider doesn't short-circuit
+		// with the stale value (it prefers Locked.UpstreamCommit when set).
+		if comp.GetConfig().Locked != nil {
+			comp.GetConfig().Locked.UpstreamCommit = ""
 		}
 
 		waitGroup.Add(1)

@@ -173,3 +173,24 @@ func writeField(writer io.Writer, label string, value string) {
 	// via values containing newlines.
 	fmt.Fprintf(writer, "%d:%s=%d:%s\n", len(label), label, len(value), value)
 }
+
+// ComputeResolutionHash hashes the config inputs that affect upstream commit
+// resolution: snapshot timestamp, distro reference, explicit pin, and upstream
+// name. This is stored in the lock file's ResolutionInputHash field so that
+// [component update] can detect when resolution inputs changed (e.g., snapshot
+// bump) without re-resolving upstream via network.
+//
+// This is intentionally separate from [ComputeIdentity] / InputFingerprint:
+//   - InputFingerprint answers "did the build output change?" (excludes snapshot)
+//   - ResolutionInputHash answers "should I re-resolve upstream?" (includes snapshot)
+func ComputeResolutionHash(component projectconfig.ComponentConfig) string {
+	hasher := sha256.New()
+
+	writeField(hasher, "snapshot", component.Spec.UpstreamDistro.Snapshot)
+	writeField(hasher, "distro_name", component.Spec.UpstreamDistro.Name)
+	writeField(hasher, "distro_version", component.Spec.UpstreamDistro.Version)
+	writeField(hasher, "upstream_commit_pin", component.Spec.UpstreamCommit)
+	writeField(hasher, "upstream_name", component.Spec.UpstreamName)
+
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+}

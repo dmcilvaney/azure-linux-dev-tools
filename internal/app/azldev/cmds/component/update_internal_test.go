@@ -146,31 +146,17 @@ func TestSaveComponentLocks_SkipsErrorAndSkipped(t *testing.T) {
 
 	results := []UpdateResult{
 		{Component: "errored", Error: "resolution failed", config: baseConfig("errored")},
-		{Component: "skipped", Skipped: true, SkipReason: "local", config: baseConfig("skipped")},
+		{Component: "skipped", Skipped: true, SkipReason: "local"},       // no config — never resolved
+		{Component: "up-to-date", UpstreamCommit: "abc123", config: nil}, // nil config — freshness skip
 	}
 
 	err := saveComponentLocks(env.Env, store, results)
 	require.NoError(t, err)
 
-	// Neither should have lock files.
-	exists1, _ := store.Exists("errored")
-	assert.False(t, exists1)
-
-	exists2, _ := store.Exists("skipped")
-	assert.False(t, exists2)
-}
-
-func TestSaveComponentLocks_ErrorOnNilConfig(t *testing.T) {
-	env := testutils.NewTestEnv(t)
-	store := newTestStore(t, env)
-
-	results := []UpdateResult{
-		{Component: "bad", UpstreamCommit: "abc", Changed: true, config: nil},
+	for _, name := range []string{"errored", "skipped", "up-to-date"} {
+		exists, _ := store.Exists(name)
+		assert.False(t, exists, "%s should not have a lock file", name)
 	}
-
-	err := saveComponentLocks(env.Env, store, results)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no resolved config")
 }
 
 func TestSaveComponentLocks_PreservesManualBump(t *testing.T) {
