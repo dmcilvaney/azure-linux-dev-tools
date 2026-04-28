@@ -108,16 +108,12 @@ func (g *FedoraSourcesProviderImpl) GetComponent(
 
 	gitRepoURL := strings.ReplaceAll(g.distroGitBaseURI, "$pkg", upstreamNameToUse)
 
-	// Determine the effective upstream commit for checkout.
-	// Prefer the locked commit (resolved reality) over config pin (intent).
+	// Use the effective upstream commit (locked > config pin).
 	//nolint:godox // tracked by TODO(lockfiles) tag.
 	// TODO(lockfiles): Once lock validation is default-on, remove the fallback
 	// to Spec.UpstreamCommit — a missing lock will be caught by validation before
 	// we get here, and the snapshot/HEAD resolution path becomes dead code.
-	effectiveCommit := component.GetConfig().Spec.UpstreamCommit
-	if locked := component.GetConfig().Locked; locked != nil && locked.UpstreamCommit != "" {
-		effectiveCommit = locked.UpstreamCommit
-	}
+	effectiveCommit := component.GetConfig().EffectiveUpstreamCommit()
 
 	slog.Info("Getting component from git repo",
 		"component", componentName,

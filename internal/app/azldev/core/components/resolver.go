@@ -504,11 +504,39 @@ func (r *Resolver) populateFromLock(config *projectconfig.ComponentConfig) {
 		return
 	}
 
+	// Distinguish "not found" from real errors. A missing lock is normal
+	// (new component, or lock validation disabled); a corrupt/unreadable
+	// lock should be surfaced so it doesn't silently fall back to live
+	// upstream resolution.
+	exists, existsErr := reader.Exists(config.Name)
+	if existsErr != nil {
+		slog.Warn("Cannot check lock file", "component", config.Name, "error", existsErr)
+
+		return
+	}
+
+	if !exists {
+		return
+	}
+
 	lock, err := reader.Get(config.Name)
 	if err != nil {
-		// No lock file or unreadable — nothing to populate.
-		// Structural validation (if enabled) will catch missing locks separately.
+		slog.Warn("Lock file exists but is unreadable (corrupt or unsupported version)",
+			"component", config.Name, "error", err)
+
 		return
+	}
+
+	// Warn when locked commit differs from explicit config pin — this is a
+	// staleness signal. Validation catches it as an error when enabled, but
+	// during the rollout transition we surface it as a warning.
+	if config.Spec.UpstreamCommit != "" &&
+		lock.UpstreamCommit != "" &&
+		config.Spec.UpstreamCommit != lock.UpstreamCommit {
+		slog.Warn("Lock differs from config pin — run 'component update' to refresh",
+			"component", config.Name,
+			"configPin", config.Spec.UpstreamCommit,
+			"lockedCommit", lock.UpstreamCommit)
 	}
 
 	config.Locked = &projectconfig.ComponentLockData{

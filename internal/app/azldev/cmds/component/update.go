@@ -350,6 +350,13 @@ func resolveUpstreamCommitsParallel(
 				return
 			}
 
+			// Clear locked commit so the source provider re-resolves from
+			// upstream (clone + snapshot/HEAD) instead of short-circuiting
+			// with the existing lock value.
+			if comp.GetConfig().Locked != nil {
+				comp.GetConfig().Locked.UpstreamCommit = ""
+			}
+
 			commitHash, resolveErr := resolveOneUpstreamCommit(workerEnv, comp)
 			if resolveErr != nil {
 				results[idx].Error = resolveErr.Error()

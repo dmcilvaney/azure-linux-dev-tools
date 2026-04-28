@@ -154,7 +154,9 @@ type ReleaseConfig struct {
 // (lock data). Populated by the component resolver from the lock store; nil when
 // no lock file exists for this component.
 //
-// Not serialized or fingerprinted — runtime-only.
+// Not serialized or fingerprinted — runtime-only. The pointer must not be
+// shared across value-copied configs; the resolver always allocates a fresh
+// struct per component.
 type ComponentLockData struct {
 	// UpstreamCommit is the resolved upstream commit from the lock file.
 	UpstreamCommit string `json:"upstreamCommit,omitempty"`
@@ -164,6 +166,17 @@ type ComponentLockData struct {
 	ManualBump int `json:"manualBump,omitempty"`
 	// InputFingerprint is the stored fingerprint from the last update.
 	InputFingerprint string `json:"inputFingerprint,omitempty"`
+}
+
+// EffectiveUpstreamCommit returns the commit to use for upstream operations.
+// Prefers the locked commit (resolved reality) over the config pin (user intent).
+// Returns empty string when neither is set.
+func (c *ComponentConfig) EffectiveUpstreamCommit() string {
+	if c.Locked != nil && c.Locked.UpstreamCommit != "" {
+		return c.Locked.UpstreamCommit
+	}
+
+	return c.Spec.UpstreamCommit
 }
 
 // Defines a component.
