@@ -14,6 +14,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev"
+	"github.com/microsoft/azure-linux-dev-tools/internal/fingerprint"
 	"github.com/microsoft/azure-linux-dev-tools/internal/projectconfig"
 	"github.com/microsoft/azure-linux-dev-tools/internal/utils/fileutils"
 )
@@ -30,6 +31,17 @@ type Resolver struct {
 	// themselves (e.g., 'component update') to avoid noise telling the user
 	// to do what they're already doing.
 	SuppressLockWarnings bool
+	// CheckFreshness enables fingerprint-based freshness computation during
+	// component resolution. When true, each component's
+	// [projectconfig.ComponentLockData.Freshness] is set based on comparing
+	// stored hashes to recomputed ones. When false (default), freshness
+	// remains [projectconfig.FreshnessUnknown].
+	//
+	// Off by default because most commands (build, render, prepare-sources)
+	// consume locked state as-is and don't need to know whether it's stale.
+	// Only 'component update' enables this — it uses the freshness status to
+	// decide which components need re-resolution and which can be skipped.
+	CheckFreshness bool
 }
 
 // NewResolver constructs a new [Resolver] for the given environment.
@@ -542,13 +554,112 @@ func (r *Resolver) populateFromLock(config *projectconfig.ComponentConfig) {
 	}
 
 	config.Locked = &projectconfig.ComponentLockData{
-		UpstreamCommit:   lock.UpstreamCommit,
-		ImportCommit:     lock.ImportCommit,
-		ManualBump:       lock.ManualBump,
-		InputFingerprint: lock.InputFingerprint,
+		UpstreamCommit:      lock.UpstreamCommit,
+		ImportCommit:        lock.ImportCommit,
+		ManualBump:          lock.ManualBump,
+		InputFingerprint:    lock.InputFingerprint,
+		ResolutionInputHash: lock.ResolutionInputHash,
 	}
 
-	slog.Debug("Populated lock data", "component", config.Name, "commit", lock.UpstreamCommit)
+	if r.CheckFreshness {
+		r.computeFreshnessStatus(config)
+	}
+
+	slog.Debug("Populated lock data", "component", config.Name,
+		"commit", lock.UpstreamCommit, "freshness", config.Locked.Freshness)
+}
+
+// computeFreshnessStatus compares current config state to stored lock data.
+// A component is [projectconfig.FreshnessCurrent] only when both:
+//   - InputFingerprint matches (build inputs unchanged)
+//   - ResolutionInputHash matches (resolution inputs like snapshot unchanged)
+//
+// If either differs, the component is [projectconfig.FreshnessStale].
+// [projectconfig.ComponentLockData.ResolutionStale] is set separately so
+// callers can distinguish "need re-resolution" from "reuse locked commit."
+//
+// Left as [projectconfig.FreshnessUnknown] when comparison isn't possible
+// (missing stored hash, distro error, etc.).
+func (r *Resolver) computeFreshnessStatus(config *projectconfig.ComponentConfig) {
+	if config.Locked == nil {
+		return
+	}
+
+	// Need at least one stored hash to compare against.
+	if config.Locked.InputFingerprint == "" && config.Locked.ResolutionInputHash == "" {
+		return
+	}
+
+	// Check resolution inputs (cheap, no I/O).
+	resolutionHash := fingerprint.ComputeResolutionHash(*config)
+	if config.Locked.ResolutionInputHash != "" &&
+		config.Locked.ResolutionInputHash != resolutionHash {
+		config.Locked.ResolutionStale = true
+		config.Locked.Freshness = projectconfig.FreshnessStale
+
+		slog.Debug("Component is stale (resolution inputs changed)",
+			"component", config.Name,
+			"stored", config.Locked.ResolutionInputHash,
+			"computed", resolutionHash)
+	}
+
+	// Check input fingerprint (requires distro for release ver + overlay I/O).
+	if config.Locked.InputFingerprint == "" {
+		return
+	}
+
+	releaseVer, distroErr := r.resolveReleaseVer(config)
+	if distroErr != nil {
+		slog.Debug("Cannot compute freshness (distro resolve failed)",
+			"component", config.Name, "error", distroErr)
+
+		return
+	}
+
+	identity, fpErr := fingerprint.ComputeIdentity(
+		r.env.FS(),
+		*config,
+		releaseVer,
+		fingerprint.IdentityOptions{
+			ManualBump:     config.Locked.ManualBump,
+			SourceIdentity: config.Locked.UpstreamCommit,
+		},
+	)
+	if fpErr != nil {
+		slog.Debug("Cannot compute freshness",
+			"component", config.Name, "error", fpErr)
+
+		return
+	}
+
+	if identity.Fingerprint == config.Locked.InputFingerprint {
+		// Fingerprint matches. If resolution was also fresh, mark Current.
+		if !config.Locked.ResolutionStale {
+			config.Locked.Freshness = projectconfig.FreshnessCurrent
+		}
+	} else {
+		config.Locked.Freshness = projectconfig.FreshnessStale
+
+		slog.Debug("Component is stale (build inputs changed)",
+			"component", config.Name,
+			"stored", config.Locked.InputFingerprint,
+			"computed", identity.Fingerprint)
+	}
+}
+
+// resolveReleaseVer resolves the per-component distro release version.
+func (r *Resolver) resolveReleaseVer(config *projectconfig.ComponentConfig) (string, error) {
+	ref := config.Spec.UpstreamDistro
+	if ref.Name == "" {
+		ref = r.env.Config().Project.DefaultDistro
+	}
+
+	_, distroVer, err := r.env.ResolveDistroRef(ref)
+	if err != nil {
+		return "", fmt.Errorf("resolving distro ref %#q:\n%w", ref.Name, err)
+	}
+
+	return distroVer.ReleaseVer, nil
 }
 
 // warnOnLockDrift emits a staleness warning for each component in the resolved
