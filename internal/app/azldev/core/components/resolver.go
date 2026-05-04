@@ -592,8 +592,19 @@ func (r *Resolver) computeFreshnessStatus(config *projectconfig.ComponentConfig)
 
 	// Check resolution inputs (cheap, no I/O).
 	resolutionHash := fingerprint.ComputeResolutionHash(*config)
-	if config.Locked.ResolutionInputHash != "" &&
-		config.Locked.ResolutionInputHash != resolutionHash {
+
+	switch {
+	case config.Locked.ResolutionInputHash == "":
+		// Legacy lock — ResolutionInputHash was not populated. Force one
+		// re-resolution to backfill the field. Use ResolutionStale=false
+		// so Case 2 fires (reuse commit, update hashes) rather than
+		// Case 3 (full re-resolve), since the commit is likely still valid.
+		config.Locked.Freshness = projectconfig.FreshnessStale
+
+		slog.Debug("Legacy lock missing resolution hash; will backfill",
+			"component", config.Name)
+
+	case config.Locked.ResolutionInputHash != resolutionHash:
 		config.Locked.ResolutionStale = true
 		config.Locked.Freshness = projectconfig.FreshnessStale
 
