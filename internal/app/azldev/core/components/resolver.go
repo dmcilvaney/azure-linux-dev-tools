@@ -628,6 +628,8 @@ func (r *Resolver) computeFreshnessStatus(config *projectconfig.ComponentConfig)
 		slog.Debug("Legacy lock missing resolution hash; will backfill",
 			"component", config.Name)
 
+		return
+
 	case config.Locked.ResolutionInputHash != resolutionHash:
 		config.Locked.ResolutionStale = true
 		config.Locked.Freshness = projectconfig.FreshnessStale
@@ -636,9 +638,21 @@ func (r *Resolver) computeFreshnessStatus(config *projectconfig.ComponentConfig)
 			"component", config.Name,
 			"stored", config.Locked.ResolutionInputHash,
 			"computed", resolutionHash)
+
+		// Skip fingerprint check — resolution is stale, so we'll
+		// re-resolve regardless. Fingerprint recomputed after resolve.
+		return
 	}
 
 	// Check input fingerprint (requires distro for release ver + overlay I/O).
+	r.checkFingerprintFreshness(config)
+}
+
+// checkFingerprintFreshness compares the recomputed input fingerprint against
+// the stored value. Sets [projectconfig.FreshnessCurrent] when the fingerprint
+// matches (and resolution is also fresh), or [projectconfig.FreshnessStale]
+// when it differs.
+func (r *Resolver) checkFingerprintFreshness(config *projectconfig.ComponentConfig) {
 	if config.Locked.InputFingerprint == "" {
 		return
 	}
