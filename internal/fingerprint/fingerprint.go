@@ -173,3 +173,28 @@ func writeField(writer io.Writer, label string, value string) {
 	// via values containing newlines.
 	fmt.Fprintf(writer, "%d:%s=%d:%s\n", len(label), label, len(value), value)
 }
+
+// ComputeResolutionHash produces a deterministic hash of the config inputs that
+// affect upstream commit resolution. When this hash matches the stored value in
+// a lock file, re-resolving the upstream commit can be skipped — the resolution
+// inputs haven't changed so the same commit would be produced.
+//
+// This prevents two classes of problems:
+//   - Unnecessary re-resolution when only build inputs changed (e.g., overlay edit)
+//   - Snapshot instability where upstream branches receive new commits (mass
+//     rebuilds, cherry-picks) that change what 'git rev-list --before' resolves
+//     to, even though the snapshot timestamp itself is unchanged
+//
+// Inputs: snapshot time, distro name/version, explicit commit pin, upstream name.
+// These are the fields that feed into [sourceproviders.FedoraSourcesProviderImpl.resolveCommit].
+func ComputeResolutionHash(component projectconfig.ComponentConfig) string {
+	hasher := sha256.New()
+
+	writeField(hasher, "snapshot", component.Spec.UpstreamDistro.Snapshot)
+	writeField(hasher, "distro_name", component.Spec.UpstreamDistro.Name)
+	writeField(hasher, "distro_version", component.Spec.UpstreamDistro.Version)
+	writeField(hasher, "upstream_commit_pin", component.Spec.UpstreamCommit)
+	writeField(hasher, "upstream_name", component.Spec.UpstreamName)
+
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+}

@@ -4,6 +4,7 @@
 package fingerprint_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/microsoft/azure-linux-dev-tools/internal/fingerprint"
@@ -672,4 +673,110 @@ func TestComputeIdentity_DifferentCheckoutPaths(t *testing.T) {
 
 	assert.Equal(t, fp1, fp2,
 		"same component in different checkout directories must produce identical fingerprints")
+}
+
+func TestComputeResolutionHash_SnapshotChangeAffectsHash(t *testing.T) {
+	comp := projectconfig.ComponentConfig{
+		Spec: projectconfig.SpecSource{
+			SourceType:   projectconfig.SpecSourceTypeUpstream,
+			UpstreamName: "curl",
+			UpstreamDistro: projectconfig.DistroReference{
+				Name:     "fedora",
+				Version:  "41",
+				Snapshot: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+
+	hashBefore := fingerprint.ComputeResolutionHash(comp)
+
+	comp.Spec.UpstreamDistro.Snapshot = "2026-06-15T00:00:00Z"
+	hashAfter := fingerprint.ComputeResolutionHash(comp)
+
+	assert.NotEqual(t, hashBefore, hashAfter,
+		"snapshot change must change resolution hash")
+}
+
+func TestComputeResolutionHash_BuildOptionDoesNotAffectHash(t *testing.T) {
+	comp := projectconfig.ComponentConfig{
+		Spec: projectconfig.SpecSource{
+			SourceType:   projectconfig.SpecSourceTypeUpstream,
+			UpstreamName: "curl",
+			UpstreamDistro: projectconfig.DistroReference{
+				Name:     "fedora",
+				Version:  "41",
+				Snapshot: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+
+	hashBefore := fingerprint.ComputeResolutionHash(comp)
+
+	comp.Build.With = []string{"ssl"}
+	hashAfter := fingerprint.ComputeResolutionHash(comp)
+
+	assert.Equal(t, hashBefore, hashAfter,
+		"build option change must NOT change resolution hash")
+}
+
+func TestComputeResolutionHash_Deterministic(t *testing.T) {
+	comp := projectconfig.ComponentConfig{
+		Spec: projectconfig.SpecSource{
+			SourceType:   projectconfig.SpecSourceTypeUpstream,
+			UpstreamName: "curl",
+			UpstreamDistro: projectconfig.DistroReference{
+				Name:     "fedora",
+				Version:  "41",
+				Snapshot: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+
+	hashFirst := fingerprint.ComputeResolutionHash(comp)
+	hashSecond := fingerprint.ComputeResolutionHash(comp)
+
+	assert.Equal(t, hashFirst, hashSecond, "same inputs must produce same hash")
+	assert.True(t, strings.HasPrefix(hashFirst, "sha256:"), "hash must have sha256 prefix")
+}
+
+func TestComputeResolutionHash_PinChangeAffectsHash(t *testing.T) {
+	comp := projectconfig.ComponentConfig{
+		Spec: projectconfig.SpecSource{
+			SourceType:   projectconfig.SpecSourceTypeUpstream,
+			UpstreamName: "curl",
+			UpstreamDistro: projectconfig.DistroReference{
+				Name:    "fedora",
+				Version: "41",
+			},
+		},
+	}
+
+	hashNoPrin := fingerprint.ComputeResolutionHash(comp)
+
+	comp.Spec.UpstreamCommit = "abc123def456"
+	hashWithPin := fingerprint.ComputeResolutionHash(comp)
+
+	assert.NotEqual(t, hashNoPrin, hashWithPin,
+		"adding an upstream commit pin must change resolution hash")
+}
+
+func TestComputeResolutionHash_DistroVersionChangeAffectsHash(t *testing.T) {
+	comp := projectconfig.ComponentConfig{
+		Spec: projectconfig.SpecSource{
+			SourceType: projectconfig.SpecSourceTypeUpstream,
+			UpstreamDistro: projectconfig.DistroReference{
+				Name:     "fedora",
+				Version:  "41",
+				Snapshot: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+
+	hashV41 := fingerprint.ComputeResolutionHash(comp)
+
+	comp.Spec.UpstreamDistro.Version = "42"
+	hashV42 := fingerprint.ComputeResolutionHash(comp)
+
+	assert.NotEqual(t, hashV41, hashV42,
+		"distro version change must change resolution hash")
 }
