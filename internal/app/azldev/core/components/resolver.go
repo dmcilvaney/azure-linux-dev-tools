@@ -590,8 +590,32 @@ func (r *Resolver) computeFreshnessStatus(config *projectconfig.ComponentConfig)
 		return
 	}
 
-	// Check resolution inputs (cheap, no I/O).
-	resolutionHash := fingerprint.ComputeResolutionHash(*config)
+	// Check resolution inputs (cheap, no I/O beyond distro resolution).
+	resInputs, resolveErr := r.buildResolutionInputs(config)
+	if resolveErr != nil {
+		slog.Debug("Cannot compute resolution hash (distro resolve failed)",
+			"component", config.Name, "error", resolveErr)
+
+		return
+	}
+
+	resolutionHash := fingerprint.ComputeResolutionHash(resInputs)
+
+	// HEAD-tracking components (no snapshot, no pin) resolve to whatever
+	// the remote branch HEAD is at call time. This is inherently
+	// non-deterministic — the same resolution inputs produce different
+	// commits when upstream pushes new code. The freshness optimization
+	// assumes "same inputs → same commit," which doesn't hold here.
+	// Always mark these as stale so they re-resolve every run.
+	if resInputs.Snapshot == "" && resInputs.UpstreamCommitPin == "" {
+		config.Locked.ResolutionStale = true
+		config.Locked.Freshness = projectconfig.FreshnessStale
+
+		slog.Debug("Component tracks HEAD (no snapshot/pin); always re-resolves",
+			"component", config.Name)
+
+		return
+	}
 
 	switch {
 	case config.Locked.ResolutionInputHash == "":
@@ -671,6 +695,37 @@ func (r *Resolver) resolveReleaseVer(config *projectconfig.ComponentConfig) (str
 	}
 
 	return distroVer.ReleaseVer, nil
+}
+
+// buildResolutionInputs resolves the effective distro and builds the
+// [fingerprint.ResolutionInputs] struct for resolution hash computation.
+// Uses the resolved (inherited) config values — not raw spec fields — so
+// that default-distro and distro-version-level snapshots are captured.
+func (r *Resolver) buildResolutionInputs(
+	config *projectconfig.ComponentConfig,
+) (fingerprint.ResolutionInputs, error) {
+	ref := config.Spec.UpstreamDistro
+	if ref.Name == "" {
+		ref = r.env.Config().Project.DefaultDistro
+	}
+
+	distroDef, distroVer, err := r.env.ResolveDistroRef(ref)
+	if err != nil {
+		return fingerprint.ResolutionInputs{}, fmt.Errorf("resolving distro ref %#q:\n%w", ref.Name, err)
+	}
+
+	return fingerprint.ResolutionInputs{
+		// Use resolved config's snapshot — not ref.Snapshot — because the
+		// snapshot may come from distro-version-level default-component-config
+		// inheritance, which is merged into config.Spec before we get here.
+		Snapshot:          config.Spec.UpstreamDistro.Snapshot,
+		DistroName:        ref.Name,
+		DistroVersion:     ref.Version,
+		DistGitBranch:     distroVer.DistGitBranch,
+		DistGitBaseURI:    distroDef.DistGitBaseURI,
+		UpstreamCommitPin: config.Spec.UpstreamCommit,
+		UpstreamName:      config.Spec.UpstreamName,
+	}, nil
 }
 
 // warnOnLockDrift emits a staleness warning for each component in the resolved

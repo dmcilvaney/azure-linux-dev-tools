@@ -306,8 +306,13 @@ func updateComponentLock(env *azldev.Env, store *lockfile.Store, result *UpdateR
 
 	lock.InputFingerprint = identity.Fingerprint
 
-	// Update resolution input hash (snapshot, distro ref, pin).
-	resHash := fingerprint.ComputeResolutionHash(*result.config)
+	// Update resolution input hash (snapshot, distro ref, branch, pin).
+	resInputs, resErr := buildResolutionInputs(env, result.config)
+	if resErr != nil {
+		return false, fmt.Errorf("building resolution inputs for %#q:\n%w", result.Component, resErr)
+	}
+
+	resHash := fingerprint.ComputeResolutionHash(resInputs)
 	resHashChanged := lock.ResolutionInputHash != resHash
 	lock.ResolutionInputHash = resHash
 
@@ -689,4 +694,36 @@ func resolveReleaseVer(env *azldev.Env, config *projectconfig.ComponentConfig) (
 	}
 
 	return distroVer.ReleaseVer, nil
+}
+
+// buildResolutionInputs resolves the effective distro for a component and
+// builds [fingerprint.ResolutionInputs] for resolution hash computation.
+// Uses the resolved (inherited) config values — not raw spec fields — so
+// that default-distro and distro-version-level snapshots are captured.
+func buildResolutionInputs(
+	env *azldev.Env, config *projectconfig.ComponentConfig,
+) (fingerprint.ResolutionInputs, error) {
+	ref := config.Spec.UpstreamDistro
+	if ref.Name == "" {
+		ref = env.Config().Project.DefaultDistro
+	}
+
+	distroDef, distroVer, err := env.ResolveDistroRef(ref)
+	if err != nil {
+		return fingerprint.ResolutionInputs{},
+			fmt.Errorf("resolving distro ref %#q:\n%w", ref.Name, err)
+	}
+
+	return fingerprint.ResolutionInputs{
+		// Use resolved config's snapshot — not ref.Snapshot — because the
+		// snapshot may come from distro-version-level default-component-config
+		// inheritance, which is merged into config.Spec before we get here.
+		Snapshot:          config.Spec.UpstreamDistro.Snapshot,
+		DistroName:        ref.Name,
+		DistroVersion:     ref.Version,
+		DistGitBranch:     distroVer.DistGitBranch,
+		DistGitBaseURI:    distroDef.DistGitBaseURI,
+		UpstreamCommitPin: config.Spec.UpstreamCommit,
+		UpstreamName:      config.Spec.UpstreamName,
+	}, nil
 }

@@ -106,6 +106,7 @@ func TestFreshness_NothingChanged_SkipsNetwork(t *testing.T) {
 
 	gitCalls := setupMockGitWithCounter(env, commit)
 	addUpstreamComponent(env, testComponentName)
+	setDistroSnapshot(env, "2025-01-01T00:00:00Z")
 
 	fpBefore, resHashBefore := initialUpdate(t, env)
 
@@ -213,6 +214,7 @@ func TestFreshness_OverlayChanged_SkipsNetwork(t *testing.T) {
 
 	gitCalls := setupMockGitWithCounter(env, commit)
 	addUpstreamComponent(env, testComponentName)
+	setDistroSnapshot(env, "2025-01-01T00:00:00Z")
 
 	fpBefore, resHashBefore := initialUpdate(t, env)
 
