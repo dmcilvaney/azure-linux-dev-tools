@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"os"
@@ -453,7 +453,7 @@ func TestWriteFailureMarkers(t *testing.T) {
 		t.Parallel()
 
 		testFS := afero.NewMemMapFs()
-		results := []*RenderResult{
+		results := []*Result{
 			{Component: "broken-pkg", OutputDir: "/output/b/broken-pkg", Status: renderStatusError},
 			{Component: "ok-pkg", OutputDir: "/output/o/ok-pkg", Status: renderStatusOK},
 			{Component: "cancelled-pkg", OutputDir: "/output/c/cancelled-pkg", Status: renderStatusCancelled},
@@ -490,7 +490,7 @@ func TestWriteFailureMarkers(t *testing.T) {
 			"/output/b/broken-pkg/broken-pkg.spec",
 			[]byte("Name: broken-pkg"), fileperms.PublicFile))
 
-		results := []*RenderResult{
+		results := []*Result{
 			{Component: "broken-pkg", OutputDir: "/output/b/broken-pkg", Status: renderStatusError},
 		}
 
@@ -520,7 +520,7 @@ func TestWriteFailureMarkers(t *testing.T) {
 			"/output/b/broken-pkg/broken-pkg.spec",
 			[]byte("Name: broken-pkg"), fileperms.PublicFile))
 
-		results := []*RenderResult{
+		results := []*Result{
 			{Component: "broken-pkg", OutputDir: "/output/b/broken-pkg", Status: renderStatusError},
 		}
 
@@ -556,7 +556,7 @@ func TestWriteFailureMarkers(t *testing.T) {
 
 		// Component "no-dir": output dir doesn't exist at all -> drift.
 
-		results := []*RenderResult{
+		results := []*Result{
 			{Component: "ok-pkg", OutputDir: "/output/o/ok-pkg", Status: renderStatusError},
 			{Component: "extra-pkg", OutputDir: "/output/e/extra-pkg", Status: renderStatusError},
 			{Component: "no-marker", OutputDir: "/output/n/no-marker", Status: renderStatusError},

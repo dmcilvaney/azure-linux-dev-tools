@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"fmt"
@@ -63,7 +63,7 @@ func writeRenderErrorMarker(fs opctx.FS, componentOutputDir string) {
 // that would fail must already be marked as failed on disk, with no extra
 // stale output around it.
 func writeFailureMarkers(
-	fileSystem opctx.FS, results []*RenderResult, allowOverwrite, checkOnly bool,
+	fileSystem opctx.FS, results []*Result, allowOverwrite, checkOnly bool,
 ) {
 	for _, result := range results {
 		if result == nil || result.Status != renderStatusError {

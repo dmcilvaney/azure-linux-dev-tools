@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"fmt"
@@ -13,8 +13,8 @@ import (
 	"github.com/microsoft/azure-linux-dev-tools/internal/global/opctx"
 )
 
-// RenderResult holds the result of rendering a single component.
-type RenderResult struct {
+// Result holds the result of rendering a single component.
+type Result struct {
 	Component string `json:"component"       table:"Component"`
 	OutputDir string `json:"outputDir"       table:"Output"`
 	Status    string `json:"status"          table:"Status"`
@@ -37,9 +37,9 @@ const (
 // useful at a glance.
 func checkOnlyRenderResult(
 	fileSystem opctx.FS,
-	options *RenderOptions,
+	options *Options,
 	resolvedComps []components.Component,
-	results []*RenderResult,
+	results []*Result,
 ) error {
 	var changed []string
 
@@ -86,8 +86,8 @@ func checkOnlyRenderResult(
 
 // sortRenderResults sorts render results alphabetically by component name,
 // with nil entries sorted to the end.
-func sortRenderResults(results []*RenderResult) {
-	slices.SortFunc(results, func(left, right *RenderResult) int {
+func sortRenderResults(results []*Result) {
+	slices.SortFunc(results, func(left, right *Result) int {
 		switch {
 		case left == nil && right == nil:
 			return 0
@@ -102,7 +102,7 @@ func sortRenderResults(results []*RenderResult) {
 }
 
 // checkRenderErrors counts error and cancelled results and returns an error if FailOnError is set.
-func checkRenderErrors(results []*RenderResult, failOnError bool) error {
+func checkRenderErrors(results []*Result, failOnError bool) error {
 	var errCount, cancelledCount int
 
 	for _, result := range results {

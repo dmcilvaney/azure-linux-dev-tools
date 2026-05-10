@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func parallelPrepare(
 	comps []components.Component,
 	stagingDir string,
 	outputDir string,
-	results []*RenderResult,
+	results []*Result,
 ) []*preparedComponent {
 	progressEvent := env.StartEvent("Preparing component sources", "count", len(comps))
 	defer progressEvent.End()
@@ -63,7 +63,7 @@ func parallelPrepare(
 				compOutputDir = "(invalid)"
 			}
 
-			results[idx] = &RenderResult{
+			results[idx] = &Result{
 				Component: compName,
 				OutputDir: compOutputDir,
 				Status:    renderStatusCancelled,
@@ -82,7 +82,7 @@ func parallelPrepare(
 
 // prepareOneComponent validates the output path for a single component and
 // prepares its sources. Returns a [prepResult] carrying either a successful
-// preparedComponent or a [RenderResult] describing the error.
+// preparedComponent or a [Result] describing the error.
 //
 // Called from a [parmap.Map] worker; semaphore acquisition and ctx-aware
 // cancellation are handled by parmap. Errors from [prepareComponentSources]
@@ -98,7 +98,7 @@ func prepareOneComponent(
 	// Validate component name and compute output directory.
 	compOutputDir, nameErr := components.RenderedSpecDir(outputDir, componentName)
 	if nameErr != nil {
-		return prepResult{result: &RenderResult{
+		return prepResult{result: &Result{
 			Component: componentName,
 			OutputDir: "(invalid)",
 			Status:    renderStatusError,
@@ -111,7 +111,7 @@ func prepareOneComponent(
 		slog.Error("Failed to prepare component sources",
 			"component", componentName, "error", err)
 
-		return prepResult{result: &RenderResult{
+		return prepResult{result: &Result{
 			Component: componentName,
 			OutputDir: compOutputDir,
 			Status:    renderStatusError,

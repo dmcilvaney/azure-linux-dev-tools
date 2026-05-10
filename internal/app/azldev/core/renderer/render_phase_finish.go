@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func parallelFinish(
 	env *azldev.Env,
 	prepared []*preparedComponent,
 	mockResultMap map[string]*sources.ComponentMockResult,
-	results []*RenderResult,
+	results []*Result,
 	stagingDir string,
 	allowOverwrite bool,
 	checkOnly bool,
@@ -52,7 +52,7 @@ func parallelFinish(
 		env.IOBoundConcurrency(),
 		prepared,
 		func(done, _ int) { progressEvent.SetProgress(int64(done), total) },
-		func(_ context.Context, prep *preparedComponent) *RenderResult {
+		func(_ context.Context, prep *preparedComponent) *Result {
 			return finishOneComponent(workerEnv, env, prep, mockResultMap, stagingDir, allowOverwrite, checkOnly)
 		},
 	)
@@ -63,7 +63,7 @@ func parallelFinish(
 		switch {
 		case result.Cancelled:
 			// Worker never started — ctx ended before parmap reached it.
-			results[prep.index] = &RenderResult{
+			results[prep.index] = &Result{
 				Component: prep.comp.GetName(),
 				OutputDir: prep.compOutputDir,
 				Status:    renderStatusCancelled,
@@ -86,14 +86,14 @@ func finishOneComponent(
 	stagingDir string,
 	allowOverwrite bool,
 	checkOnly bool,
-) *RenderResult {
+) *Result {
 	componentName := prep.comp.GetName()
 	compOutputDir := prep.compOutputDir
 
 	// Bail out early if ctx is already done so we don't write to disk after
 	// a Ctrl-C while the worker pool is draining.
 	if workerEnv.Err() != nil {
-		return &RenderResult{
+		return &Result{
 			Component: componentName,
 			OutputDir: compOutputDir,
 			Status:    renderStatusCancelled,
@@ -101,7 +101,7 @@ func finishOneComponent(
 		}
 	}
 
-	result := &RenderResult{
+	result := &Result{
 		Component: componentName,
 		OutputDir: compOutputDir,
 		Status:    renderStatusOK,

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-package component
+package renderer
 
 import (
 	"errors"
@@ -18,7 +18,7 @@ import (
 // project config. If neither the config nor --output-dir provides a path, an
 // error is returned. When the output dir comes from config, --force is auto-set
 // to allow overwriting component output (the configured path is trusted).
-func resolveAndValidateOutputDir(env *azldev.Env, options *RenderOptions) error {
+func resolveAndValidateOutputDir(env *azldev.Env, options *Options) error {
 	configDir := env.Config().Project.RenderedSpecsDir
 
 	switch {
@@ -53,7 +53,7 @@ func validateOutputDir(outputDir string) error {
 // validateCleanStaleOptions enforces the constraints around --clean-stale.
 // Extracted from RenderComponents to keep its complexity below the linter's
 // cyclomatic threshold.
-func validateCleanStaleOptions(options *RenderOptions) error {
+func validateCleanStaleOptions(options *Options) error {
 	if !options.CleanStale {
 		return nil
 	}
