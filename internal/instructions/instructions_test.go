@@ -26,6 +26,9 @@ func expectedEmbeddedFiles() []string {
 		"AGENTS.md",
 		".github/copilot-instructions.md",
 		".github/instructions/azldev.instructions.md",
+		".github/plugins/azldev/plugin.json",
+		".github/plugins/azldev/skills/azldev/SKILL.md",
+		".github/plugins/azldev/agents/azldev.agent.md",
 	}
 }
 

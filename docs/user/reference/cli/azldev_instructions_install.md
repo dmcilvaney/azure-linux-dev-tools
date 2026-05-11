@@ -22,6 +22,15 @@ The set of files installed currently includes:
   - AGENTS.md                              (open agent convention)
   - .github/copilot-instructions.md        (GitHub Copilot)
   - .github/instructions/azldev.instructions.md  (VS Code Copilot Chat)
+  - .github/plugins/azldev/                (shared Copilot CLI / VS Code
+                                            agent-plugin layout with
+                                            plugin.json + skills/ + agents/)
+
+The plugin under '.github/plugins/azldev/' uses the open plugin
+manifest format (plugin.json) shared by GitHub Copilot CLI and VS
+Code Copilot Chat agent plugins. VS Code auto-discovers it from the
+project; Copilot CLI users can install it explicitly with
+'copilot plugin install ./.github/plugins/azldev'.
 
 
 ```

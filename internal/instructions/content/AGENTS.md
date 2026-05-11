@@ -41,3 +41,7 @@ Run `azldev --help` to discover available commands.
 - `.github/copilot-instructions.md` — entry point for GitHub Copilot
 - `.github/instructions/*.instructions.md` — scoped (per-language /
   per-path) instructions for VS Code Copilot Chat
+- `.github/plugins/azldev/` — installable plugin (`plugin.json` +
+  `skills/` + `agents/`) that works in **VS Code Copilot Chat**
+  (auto-discovered) and **GitHub Copilot CLI** (install with
+  `copilot plugin install ./.github/plugins/azldev`)

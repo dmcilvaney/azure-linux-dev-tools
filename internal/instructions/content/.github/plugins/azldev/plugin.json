@@ -1,0 +1,15 @@
+{
+  "name": "azldev",
+  "description": "Azure Linux Dev Tool helpers for AI agents (Copilot Chat in VS Code, GitHub Copilot CLI, and any tool that consumes the open plugin format).",
+  "version": "0.1.0",
+  "author": {
+    "name": "Microsoft",
+    "url": "https://github.com/microsoft/azure-linux-dev-tools"
+  },
+  "homepage": "https://github.com/microsoft/azure-linux-dev-tools",
+  "repository": "https://github.com/microsoft/azure-linux-dev-tools",
+  "license": "MIT",
+  "keywords": ["azure-linux", "azldev", "rpm", "build"],
+  "skills": "skills/",
+  "agents": "agents/"
+}

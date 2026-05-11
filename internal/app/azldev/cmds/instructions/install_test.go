@@ -44,6 +44,9 @@ func TestInstallCmd_Project(t *testing.T) {
 		"AGENTS.md",
 		filepath.FromSlash(".github/copilot-instructions.md"),
 		filepath.FromSlash(".github/instructions/azldev.instructions.md"),
+		filepath.FromSlash(".github/plugins/azldev/plugin.json"),
+		filepath.FromSlash(".github/plugins/azldev/skills/azldev/SKILL.md"),
+		filepath.FromSlash(".github/plugins/azldev/agents/azldev.agent.md"),
 	} {
 		exists, err := fileutils.Exists(env.FS(), filepath.Join(projectDir, rel))
 		require.NoError(t, err)
