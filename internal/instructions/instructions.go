@@ -105,13 +105,15 @@ func Files() ([]string, error) {
 			return nil
 		}
 
-		rel, relErr := filepath.Rel(embedfsRootDir, walkPath)
+		// embed.FS always uses forward slashes regardless of host OS, so use
+		// the slash-aware [path] package (not [filepath]) to compute the
+		// path relative to embedfsRootDir.
+		rel, relErr := relSlash(embedfsRootDir, walkPath)
 		if relErr != nil {
 			return fmt.Errorf("failed to compute relative path for %#q:\n%w", walkPath, relErr)
 		}
 
-		// Use forward slashes for the public API regardless of host OS.
-		files = append(files, filepath.ToSlash(rel))
+		files = append(files, rel)
 
 		return nil
 	})
@@ -217,6 +219,28 @@ func writeOne(destFS opctx.FS, destBase, rel string, force bool) (bool, error) {
 	slog.Info("Wrote instruction file", "path", destPath)
 
 	return true, nil
+}
+
+// relSlash returns the slash-separated path of target relative to base.
+// It assumes both inputs are already slash-separated (as produced by
+// the [embed.FS] / [io/fs] APIs) and rejects target paths that are not
+// prefixed by base.
+func relSlash(base, target string) (string, error) {
+	prefix := base
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	if target == base {
+		return ".", nil
+	}
+
+	rel, ok := strings.CutPrefix(target, prefix)
+	if !ok {
+		return "", fmt.Errorf("path %#q is not under base %#q", target, base)
+	}
+
+	return rel, nil
 }
 
 // ErrNoUserConfigDir is returned when [UserDestBase] cannot determine the
