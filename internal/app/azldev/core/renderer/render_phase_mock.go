@@ -10,8 +10,14 @@ import (
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/sources"
 )
 
-// batchMockProcess runs rpmautospec and spectool for all prepared components in
-// a single mock chroot invocation. Returns a map from component name to result.
+// batchMockProcess runs rpmautospec and spectool for all viable prepared
+// jobs in a single mock chroot invocation. Returns a map from component
+// name to result.
+//
+// Jobs that failed phase 1 or were cancelled are excluded from the batch
+// (their SpecFilename() returns ""); they'll surface in
+// [PreparedJob.ApplyMockResult] as a nil mockResult lookup, which the job
+// already handles as a passthrough since its err is set.
 //
 // NOTE: All components share one mock chroot initialized from the project's
 // default distro. Phase 1 resolves distro per-component for source fetching,
@@ -22,29 +28,34 @@ func batchMockProcess(
 	env *azldev.Env,
 	mockProcessor *sources.MockProcessor,
 	stagingDir string,
-	prepared []*preparedComponent,
+	prepared []PreparedJob,
 ) map[string]*sources.ComponentMockResult {
-	if len(prepared) == 0 {
-		return nil
+	// Build batch inputs from viable jobs (skip failed/cancelled).
+	inputs := make([]sources.ComponentInput, 0, len(prepared))
+
+	for _, job := range prepared {
+		if job.SpecFilename() == "" {
+			continue
+		}
+
+		inputs = append(inputs, sources.ComponentInput{
+			Name:         job.ComponentName(),
+			SpecFilename: job.SpecFilename(),
+		})
 	}
 
-	// Build batch inputs from prepared components.
-	inputs := make([]sources.ComponentInput, len(prepared))
-	for idx, prep := range prepared {
-		inputs[idx] = sources.ComponentInput{
-			Name:         prep.comp.GetName(),
-			SpecFilename: prep.specFilename,
-		}
+	if len(inputs) == 0 {
+		return nil
 	}
 
 	mockResults, err := mockProcessor.BatchProcess(env, env, stagingDir, inputs, env.FS(), env.CPUBoundConcurrency())
 	if err != nil {
 		slog.Error("Batch mock processing failed", "error", err)
-		// Return empty map — all components will get reported as errors in phase 3.
+		// Return empty map — every consuming job will see a nil lookup and
+		// surface "no mock result" as its own error.
 		return nil
 	}
 
-	// Build lookup map for phase 3.
 	resultMap := make(map[string]*sources.ComponentMockResult, len(mockResults))
 	for idx := range mockResults {
 		resultMap[mockResults[idx].Name] = &mockResults[idx]

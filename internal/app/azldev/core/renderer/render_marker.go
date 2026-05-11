@@ -47,67 +47,12 @@ func writeRenderErrorMarker(fs opctx.FS, componentOutputDir string) {
 	}
 }
 
-// writeFailureMarkers walks the final results slice and writes a RENDER_FAILED
-// marker into each errored component's output directory. When allowOverwrite
-// is set, any pre-existing content at the path is removed first so the marker
-// isn't surrounded by stale render output.
-//
-// Cancelled components are intentionally skipped — a Ctrl-C is not a render
-// failure, just an incomplete run, and silently planting markers under those
-// circumstances would lie in git diff.
-//
-// In --check-only mode, no marker is written. Instead, the existing on-disk
-// state for each errored component is verified to be exactly the standard
-// failure marker; any deviation flips result.Changed so the caller can fail
-// the run. This delivers the 1:1 invariant the user asked for: a component
-// that would fail must already be marked as failed on disk, with no extra
-// stale output around it.
-func writeFailureMarkers(
-	fileSystem opctx.FS, results []*Result, allowOverwrite, checkOnly bool,
-) {
-	for _, result := range results {
-		if result == nil || result.Status != renderStatusError {
-			continue
-		}
-
-		if checkOnly {
-			drifted, err := outputDriftsFromMarker(fileSystem, result.OutputDir)
-			if err != nil {
-				// Surface inspection errors at Warn so a CI failure is
-				// debuggable. Treat them as drift -- safer to fail loudly
-				// than silently pass.
-				slog.Warn("Failed to inspect output dir for failure-marker check; treating as drift",
-					"path", result.OutputDir, "error", err)
-
-				result.Changed = true
-
-				continue
-			}
-
-			if drifted {
-				result.Changed = true
-			}
-
-			continue
-		}
-
-		if allowOverwrite {
-			if removeErr := fileSystem.RemoveAll(result.OutputDir); removeErr != nil {
-				slog.Debug("Failed to clean output before writing error marker",
-					"path", result.OutputDir, "error", removeErr)
-			}
-		}
-
-		writeRenderErrorMarker(fileSystem, result.OutputDir)
-	}
-}
-
 // outputDriftsFromMarker reports whether outputDir's contents diverge from a
 // fresh failure write -- i.e., a single RENDER_FAILED file containing the
 // canonical marker body. Returns true when the on-disk state would change
-// if a real failure write ran. Used by --check-only to enforce 1:1 parity:
-// a component that would fail must already be marked failed on disk, with
-// no extra stale output around it.
+// if a real failure write ran. Used by [FinishedJob.Diff] for failure jobs
+// to enforce 1:1 parity: a component that would fail must already be
+// marked failed on disk, with no extra stale output around it.
 func outputDriftsFromMarker(fileSystem opctx.FS, outputDir string) (bool, error) {
 	exists, err := fileutils.DirExists(fileSystem, outputDir)
 	if err != nil {

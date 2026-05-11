@@ -4,30 +4,36 @@
 // Package renderer renders the post-overlay spec and sidecar files for one
 // or more components into a checked-in output directory.
 //
-// The pipeline runs in three phases:
+// One component = one [renderJob], threaded through the pipeline via three
+// view interfaces that the type system enforces in order:
 //
-//  1. Parallel source preparation (clone, overlay, synthetic git)         [render_phase_prepare.go]
-//  2. Batch mock processing (rpmautospec + spectool in one chroot call)   [render_phase_mock.go]
-//  3. Parallel finishing (filter files, remove .git, diff, copy output)   [render_phase_finish.go]
+//	NewJob ─Prepare/MarkCancelled─▶ PreparedJob ─ApplyMockResult─▶ FinishedJob
 //
-// Supporting concerns are factored into their own files:
+// The orchestrator runs three batched-parallel phases between the views:
 //
-//   - renderer.go (this file)  — public entrypoint [Render], the [Options] /
-//     [Result] types, and the intermediate types
-//     ([preparedComponent], [prepResult]) passed
-//     between phases.
-//   - render_options.go        — output-dir resolution, validation, mock
-//     processor construction.
-//   - render_result.go         — [Result] type, status consts, sort, the
-//     error / check-only summarizers.
-//   - render_marker.go         — RENDER_FAILED marker contract (write,
-//     read, verify).
-//   - render_orphans.go        — orphan dir detection and pruning for
-//     --clean-stale runs.
+//  1. parallelPrepare  — clone, overlay, synthetic git              [render_phase_prepare.go]
+//     []NewJob → []PreparedJob
+//  2. batchMockProcess — rpmautospec + spectool in one chroot call  [render_phase_mock.go]
+//  3. parallelFinish   — filter files, strip .git                   [render_phase_finish.go]
+//     []PreparedJob → []FinishedJob
 //
-// The CLI wrapper lives at
-// internal/app/azldev/cmds/component/render.go and translates cobra flags
-// into an [Options] before calling [Render].
+// Then serially: Diff every finished job against disk (always), and unless
+// --check-only, Apply each one (copy content / write failure marker / no-op
+// for cancelled).
+//
+// Supporting files:
+//
+//   - renderer.go (this file)  — public entrypoint [Render], [Options],
+//     package doc.
+//   - job.go                   — [Job]/[NewJob]/[PreparedJob]/[FinishedJob]
+//     interfaces + the concrete [renderJob]
+//     implementing all three.
+//   - render_options.go        — output-dir resolution + validation.
+//   - render_result.go         — [Result] type + status helpers.
+//   - render_marker.go         — RENDER_FAILED marker contract.
+//   - render_orphans.go        — orphan dir detection / pruning.
+//
+// The CLI wrapper lives at internal/app/azldev/cmds/component/render.go.
 package renderer
 
 import (
@@ -53,26 +59,7 @@ type Options struct {
 	CheckOnly         bool
 }
 
-// preparedComponent holds the intermediate state after source preparation,
-// before mock processing. Internal to the renderer package; phases 1, 2,
-// and 3 all consume it.
-type preparedComponent struct {
-	index         int
-	comp          components.Component
-	specFilename  string // e.g., "curl.spec"
-	compOutputDir string // validated output path computed in phase 1
-}
-
-// prepResult pairs a prepared component (on success) or a render result
-// (on error). Returned from each phase-1 worker to its caller.
-type prepResult struct {
-	prepared *preparedComponent
-	result   *Result // non-nil on error
-}
-
-// Render renders the post-overlay spec and sidecar files for each selected
-// component into the output directory. See the package doc for the three
-// phases.
+// Render runs the full render pipeline. See the package doc for the phases.
 func Render(env *azldev.Env, options *Options) ([]*Result, error) {
 	if err := resolveAndValidateOutputDir(env, options); err != nil {
 		return nil, err
@@ -95,7 +82,6 @@ func Render(env *azldev.Env, options *Options) ([]*Result, error) {
 		)
 	}
 
-	// Create mock processor for rpmautospec/spectool.
 	mockProcessor := createMockProcessor(env)
 	if mockProcessor == nil {
 		return nil, errors.New(
@@ -104,69 +90,48 @@ func Render(env *azldev.Env, options *Options) ([]*Result, error) {
 
 	defer mockProcessor.Destroy(env)
 
-	// Create a shared staging directory. Each component gets a subdirectory
-	// named by component name, enabling a single bind mount for the batch
-	// mock invocation. Use the project work dir instead of /tmp to avoid
-	// filling up tmpfs on large renders.
-	if err := env.FS().MkdirAll(env.WorkDir(), fileperms.PublicDir); err != nil {
-		return nil, fmt.Errorf("creating work directory:\n%w", err)
-	}
-
-	stagingDir, err := fileutils.MkdirTemp(env.FS(), env.WorkDir(), "azldev-render-staging-")
+	stagingDir, cleanup, err := createStagingDir(env)
 	if err != nil {
-		return nil, fmt.Errorf("creating staging directory:\n%w", err)
+		return nil, err
 	}
 
-	defer func() {
-		if removeErr := env.FS().RemoveAll(stagingDir); removeErr != nil {
-			slog.Debug("Failed to clean up staging directory", "path", stagingDir, "error", removeErr)
-		}
-	}()
+	defer cleanup()
 
 	componentList := comps.Components()
-	results := make([]*Result, len(componentList))
 
-	// ── Phase 1: Parallel source preparation ──
-	prepared := parallelPrepare(env, componentList, stagingDir, options.OutputDir, results)
+	// Build one renderJob per component up front. The job carries every
+	// piece of state (paths, errors, change-detection) through the pipeline.
+	newJobs := buildJobs(componentList, stagingDir, options.OutputDir)
 
-	// ── Phase 2: Batch mock processing ──
-	mockResultMap := batchMockProcess(env, mockProcessor, stagingDir, prepared)
+	// ── Phase 1 → []PreparedJob ──
+	preparedJobs := parallelPrepare(env, newJobs)
+
+	// ── Phase 2: batched mock invocation ──
+	mockResultMap := batchMockProcess(env, mockProcessor, stagingDir, preparedJobs)
 
 	// Prune orphan component dirs (components removed from config) when
-	// --clean-stale is set. Per-component output dirs that match the resolved
-	// component set are NOT touched here; phase 3 will RemoveAll+rewrite each
-	// of them via copyRenderedOutput. This keeps the diff against existing
-	// output meaningful (so result.Changed reflects actual content drift
-	// instead of being unconditionally true after a blanket wipe) and reduces
-	// the blast radius of a Ctrl-C: we only ever delete dirs that wouldn't
-	// have been re-rendered anyway.
+	// --clean-stale is set. Done between phases 2 and 3 so the diff in
+	// [FinishedJob.Diff] still sees the per-component dirs that WILL be
+	// rewritten by Apply -- which keeps Result.Changed meaningful and
+	// reduces the blast radius of a Ctrl-C (we never delete dirs that
+	// would have been re-rendered anyway).
 	//
-	// Skipped in --check-only mode -- check-only must never touch disk; the
-	// orphan list is computed read-only later via checkOnlyRenderResult.
+	// Skipped in --check-only mode -- the orphan list is computed
+	// read-only later via checkOnlyRenderResult.
 	if options.CleanStale && !options.CheckOnly {
-		names := make([]string, len(componentList))
-		for idx, comp := range componentList {
-			names[idx] = comp.GetName()
-		}
-
-		if pruneErr := pruneOrphanRenderedDirs(env.FS(), options.OutputDir, names); pruneErr != nil {
-			return nil, fmt.Errorf("pruning orphan rendered-spec dirs in %#q:\n%w", options.OutputDir, pruneErr)
+		if pruneErr := pruneOrphansForComponents(env, options.OutputDir, componentList); pruneErr != nil {
+			return nil, pruneErr
 		}
 	}
 
-	// ── Phase 3: Parallel finishing ──
-	parallelFinish(env, prepared, mockResultMap, results, stagingDir,
-		options.Force, options.CheckOnly)
+	// ── Phase 3 → []FinishedJob ──
+	finishedJobs := parallelFinish(env, preparedJobs, mockResultMap)
 
-	// Write RENDER_FAILED markers for any component that errored in phase 1
-	// (source preparation) or phase 3 (mock result application + copy).
-	// Centralizing this here makes it idempotent with the --clean-stale wipe
-	// (which sits between phases 2 and 3) and keeps the per-phase code free
-	// of bookkeeping. In --check-only mode this verifies that on-disk state
-	// matches the expected single-marker shape and flags drift on mismatch.
-	writeFailureMarkers(env.FS(), results, options.Force, options.CheckOnly)
+	// Diff every job (always) and Apply (unless --check-only).
+	// Apply errors are recorded into the job's err so Result() reflects
+	// them; per-job apply failures do NOT abort the whole render.
+	results := finalizeJobs(env, finishedJobs, options.Force, options.CheckOnly)
 
-	// Sort results alphabetically for consistent output.
 	sortRenderResults(results)
 
 	if options.CheckOnly {
@@ -174,4 +139,76 @@ func Render(env *azldev.Env, options *Options) ([]*Result, error) {
 	}
 
 	return results, checkRenderErrors(results, options.FailOnError)
+}
+
+// buildJobs constructs a [NewJob] per component, in input order.
+func buildJobs(comps []components.Component, stagingDirRoot, outputDirRoot string) []NewJob {
+	jobs := make([]NewJob, len(comps))
+	for idx, comp := range comps {
+		jobs[idx] = newRenderJob(comp, stagingDirRoot, outputDirRoot)
+	}
+
+	return jobs
+}
+
+// finalizeJobs runs Diff (always) and Apply (unless checkOnly) over every
+// finished job, then turns each into a [Result]. Returns results in input
+// order so the caller can sort them.
+func finalizeJobs(env *azldev.Env, jobs []FinishedJob, allowOverwrite, checkOnly bool) []*Result {
+	results := make([]*Result, len(jobs))
+
+	for idx, job := range jobs {
+		job.Diff(env.FS())
+
+		if !checkOnly {
+			if applyErr := job.Apply(env, allowOverwrite); applyErr != nil {
+				slog.Error("Failed to apply job",
+					"component", job.Result().Component, "error", applyErr)
+			}
+		}
+
+		results[idx] = job.Result()
+	}
+
+	return results
+}
+
+// createStagingDir creates the shared staging directory used by every phase.
+// Returns a cleanup func that removes the directory; the caller defers it.
+//
+// Uses the project work dir instead of /tmp to avoid filling up tmpfs on
+// large renders. Each component gets a subdirectory named after it,
+// enabling a single bind mount for the batch mock invocation.
+func createStagingDir(env *azldev.Env) (string, func(), error) {
+	if err := env.FS().MkdirAll(env.WorkDir(), fileperms.PublicDir); err != nil {
+		return "", nil, fmt.Errorf("creating work directory:\n%w", err)
+	}
+
+	stagingDir, err := fileutils.MkdirTemp(env.FS(), env.WorkDir(), "azldev-render-staging-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating staging directory:\n%w", err)
+	}
+
+	cleanup := func() {
+		if removeErr := env.FS().RemoveAll(stagingDir); removeErr != nil {
+			slog.Debug("Failed to clean up staging directory", "path", stagingDir, "error", removeErr)
+		}
+	}
+
+	return stagingDir, cleanup, nil
+}
+
+// pruneOrphansForComponents wraps [pruneOrphanRenderedDirs] with the
+// component-name extraction and error wrapping the orchestrator wants.
+func pruneOrphansForComponents(env *azldev.Env, outputDir string, comps []components.Component) error {
+	names := make([]string, len(comps))
+	for idx, comp := range comps {
+		names[idx] = comp.GetName()
+	}
+
+	if err := pruneOrphanRenderedDirs(env.FS(), outputDir, names); err != nil {
+		return fmt.Errorf("pruning orphan rendered-spec dirs in %#q:\n%w", outputDir, err)
+	}
+
+	return nil
 }

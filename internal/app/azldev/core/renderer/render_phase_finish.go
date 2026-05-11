@@ -22,23 +22,21 @@ import (
 	"github.com/spf13/afero"
 )
 
-// parallelFinish applies mock results (file filtering, .git removal) and copies
-// rendered output for all successfully prepared components. In --check-only
-// mode, the copy step is replaced with a tree comparison and no disk writes
-// happen.
+// parallelFinish runs phase 3 (apply mock result: filter + strip .git) over
+// every prepared job concurrently, bounded by [azldev.Env.IOBoundConcurrency].
+//
+// Inputs are [PreparedJob]s; outputs are the same jobs advanced to
+// [FinishedJob]. Failures and cancellations short-circuit inside the job
+// itself, so every entry comes back as a uniformly-typed FinishedJob.
+//
+// No disk writes to the output dir happen here -- that is
+// [FinishedJob.Apply]'s job, and the orchestrator decides whether to call
+// it (--check-only skips).
 func parallelFinish(
 	env *azldev.Env,
-	prepared []*preparedComponent,
+	prepared []PreparedJob,
 	mockResultMap map[string]*sources.ComponentMockResult,
-	results []*Result,
-	stagingDir string,
-	allowOverwrite bool,
-	checkOnly bool,
-) {
-	if len(prepared) == 0 {
-		return
-	}
-
+) []FinishedJob {
 	progressEvent := env.StartEvent("Finishing rendered output", "count", len(prepared))
 	defer progressEvent.End()
 
@@ -52,167 +50,25 @@ func parallelFinish(
 		env.IOBoundConcurrency(),
 		prepared,
 		func(done, _ int) { progressEvent.SetProgress(int64(done), total) },
-		func(_ context.Context, prep *preparedComponent) *Result {
-			return finishOneComponent(workerEnv, env, prep, mockResultMap, stagingDir, allowOverwrite, checkOnly)
+		func(_ context.Context, j PreparedJob) FinishedJob {
+			return j.ApplyMockResult(workerEnv, mockResultMap[j.ComponentName()])
 		},
 	)
 
-	for i, result := range parmapResults {
-		prep := prepared[i]
+	finishedJobs := make([]FinishedJob, len(prepared))
 
-		switch {
-		case result.Cancelled:
+	for idx, result := range parmapResults {
+		if result.Cancelled {
 			// Worker never started — ctx ended before parmap reached it.
-			results[prep.index] = &Result{
-				Component: prep.comp.GetName(),
-				OutputDir: prep.compOutputDir,
-				Status:    renderStatusCancelled,
-				Error:     "context cancelled",
-			}
-		default:
-			results[prep.index] = result.Value
-		}
-	}
-}
-
-// finishOneComponent wraps [finishComponentRender] with the per-component
-// result bookkeeping (status, error message). Called from a [parmap.Map]
-// worker; semaphore acquisition is handled by parmap.
-func finishOneComponent(
-	workerEnv *azldev.Env,
-	env *azldev.Env,
-	prep *preparedComponent,
-	mockResultMap map[string]*sources.ComponentMockResult,
-	stagingDir string,
-	allowOverwrite bool,
-	checkOnly bool,
-) *Result {
-	componentName := prep.comp.GetName()
-	compOutputDir := prep.compOutputDir
-
-	// Bail out early if ctx is already done so we don't write to disk after
-	// a Ctrl-C while the worker pool is draining.
-	if workerEnv.Err() != nil {
-		return &Result{
-			Component: componentName,
-			OutputDir: compOutputDir,
-			Status:    renderStatusCancelled,
-			Error:     "context cancelled",
+			// Re-run ApplyMockResult with a nil mock; the job's internal
+			// short-circuit (env.Err() check) records ctx.Canceled.
+			finishedJobs[idx] = prepared[idx].ApplyMockResult(workerEnv, nil)
+		} else {
+			finishedJobs[idx] = result.Value
 		}
 	}
 
-	result := &Result{
-		Component: componentName,
-		OutputDir: compOutputDir,
-		Status:    renderStatusOK,
-	}
-
-	drifted, err := finishComponentRender(env, prep, mockResultMap, stagingDir, allowOverwrite, checkOnly)
-	if err != nil {
-		slog.Error("Failed to finish rendering component",
-			"component", componentName, "error", err)
-
-		result.Status = renderStatusError
-		result.Error = err.Error()
-	}
-
-	result.Changed = drifted
-
-	return result
-}
-
-// finishComponentRender applies mock results, filters unreferenced files,
-// removes .git, diffs the staging tree against the existing on-disk output,
-// and (unless checkOnly is set) copies the staging tree to the output dir.
-// stagingDir is the root staging directory containing the component's subdirectory.
-//
-// Returns changed=true when the staging tree differs from the existing output
-// (or no existing output is present). The diff is computed unconditionally so
-// every render run gets a meaningful 'Changed' value in its result table; the
-// disk write is the only thing gated by checkOnly.
-func finishComponentRender(
-	env *azldev.Env,
-	prep *preparedComponent,
-	mockResultMap map[string]*sources.ComponentMockResult,
-	stagingDir string,
-	allowOverwrite bool,
-	checkOnly bool,
-) (bool, error) {
-	componentName := prep.comp.GetName()
-	componentDir := filepath.Join(stagingDir, componentName)
-	specPath := filepath.Join(componentDir, prep.specFilename)
-
-	// Check mock result.
-	mockResult, hasMockResult := mockResultMap[componentName]
-	if !hasMockResult {
-		return false, fmt.Errorf(
-			"no mock result for %#q (batch mock processing failed; see earlier errors)", componentName)
-	}
-
-	if mockResult.Error != nil {
-		return false, fmt.Errorf(
-			"mock processing failed for %#q:\n%w", componentName, mockResult.Error)
-	}
-
-	// Filter files using spectool result from batch mock.
-	// Skip filtering when:
-	// 1. The component config explicitly opts out via 'skip-file-filter'.
-	// 2. spectool output contains unexpanded RPM macros (%{...}), indicating
-	//    that the reported filenames don't match the real files on disk.
-	if prep.comp.GetConfig().Render.SkipFileFilter {
-		slog.Info("Skipping file filter ('skip-file-filter' is set)", "component", componentName)
-	} else if macro := findUnexpandedMacro(mockResult.SpecFiles); macro != "" {
-		slog.Info("Skipping file filter (spectool output contains unexpanded macros)",
-			"component", componentName, "example", macro)
-	} else if filterErr := removeUnreferencedFiles(
-		env.FS(), componentDir, specPath, mockResult.SpecFiles, componentName,
-	); filterErr != nil {
-		return false, fmt.Errorf("filtering unreferenced files for %#q:\n%w", componentName, filterErr)
-	}
-
-	// Remove .git directory — must not appear in rendered output.
-	// rpmautospec already read it during the batch mock phase.
-	gitDir := filepath.Join(componentDir, ".git")
-	if removeErr := env.FS().RemoveAll(gitDir); removeErr != nil {
-		slog.Debug("Failed to remove .git directory", "path", gitDir, "error", removeErr)
-	}
-
-	// Compare staging tree to existing output. Always done so the result table
-	// reflects which components actually changed on disk this run, not just
-	// in --check-only mode.
-	changed, diffErr := diffRenderedOutput(env.FS(), componentDir, prep.compOutputDir)
-	if diffErr != nil {
-		return false, fmt.Errorf("comparing rendered output for %#q:\n%w", componentName, diffErr)
-	}
-
-	if checkOnly {
-		return changed, nil
-	}
-
-	// Copy rendered files to the component's output directory.
-	if copyErr := copyRenderedOutput(env, componentDir, prep.compOutputDir, allowOverwrite); copyErr != nil {
-		return changed, copyErr
-	}
-
-	// Best-effort: create a sibling symlink at the URL-encoded component name to
-	// bridge a path-encoding mismatch. We percent-encode component names like
-	// 'libxml++' into 'libxml%2B%2B' when building the SCM URL fragment passed to
-	// the build host (koji), but the build system then uses that fragment as a
-	// filesystem path without decoding it. The symlink lets the build host find
-	// the component under either form.
-	//
-	//nolint:godox // tracked by TODO(koji-fragment-decode) tag.
-	// TODO(koji-fragment-decode): remove once the build system decodes fragments.
-	if aliasErr := writeAliasSymlink(env.FS(), prep.compOutputDir, componentName); aliasErr != nil {
-		slog.Warn("Failed to create rendered-spec alias symlink; downstream build steps"+
-			" that consume the percent-encoded path may fail to locate this component",
-			"component", componentName, "error", aliasErr)
-	}
-
-	slog.Info("Rendered component", "component", componentName,
-		"output", prep.compOutputDir)
-
-	return changed, nil
+	return finishedJobs
 }
 
 // findUnexpandedMacro returns the first filename from specFiles that contains
@@ -245,7 +101,6 @@ func removeUnreferencedFiles(fs opctx.FS, tempDir, specPath string, specFiles []
 		keepSet[topLevel] = true
 	}
 
-	// Walk the temp directory and remove anything not in the keep set.
 	entries, readErr := fileutils.ReadDir(fs, tempDir)
 	if readErr != nil {
 		return fmt.Errorf("reading temp directory %#q:\n%w", tempDir, readErr)
@@ -312,7 +167,6 @@ func copyRenderedOutput(env *azldev.Env, tempDir, componentOutputDir string, all
 				componentOutputDir)
 		}
 
-		// Clean up existing rendered output for this component.
 		if removeErr := env.FS().RemoveAll(componentOutputDir); removeErr != nil {
 			return fmt.Errorf("cleaning output directory %#q:\n%w", componentOutputDir, removeErr)
 		}
@@ -322,7 +176,6 @@ func copyRenderedOutput(env *azldev.Env, tempDir, componentOutputDir string, all
 		return fmt.Errorf("creating output directory %#q:\n%w", componentOutputDir, mkdirErr)
 	}
 
-	// Copy all files from temp to output.
 	copyOptions := fileutils.CopyDirOptions{
 		CopyFileOptions: fileutils.CopyFileOptions{
 			PreserveFileMode: true,
@@ -376,7 +229,6 @@ func writeAliasSymlink(fileSystem opctx.FS, componentOutputDir, componentName st
 			"alias path %#q is already occupied by a non-symlink entry; refusing to overwrite",
 			aliasPath)
 	case lstatErr == nil:
-		// Existing symlink — remove and replace below.
 		if removeErr := fileSystem.Remove(aliasPath); removeErr != nil {
 			return fmt.Errorf("removing existing alias symlink %#q:\n%w", aliasPath, removeErr)
 		}
