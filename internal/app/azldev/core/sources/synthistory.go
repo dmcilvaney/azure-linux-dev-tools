@@ -264,12 +264,24 @@ func buildInterleavedSequence(
 // at the first synthetic commit. Without this, rpmautospec sees the overlay
 // only at HEAD and treats it as the single seed commit, materializing no
 // per-commit changelog entries.
+//
+// Replayed upstream commits also receive a spec-body flip to '%autochangelog'
+// and (when present in the overlay) the same 'changelog' sidecar blob. This
+// keeps both rpmautospec's autochangelog chain and its sidecar-file boundary
+// check unbroken from HEAD back to the kept import-commit. The kept
+// import-commit retains its original tree and acts as the seed where
+// rpmautospec terminates the walk.
 func replayInterleavedHistory(
 	repo *gogit.Repository,
 	sequence []interleavedEntry,
 	overlayTreeHash plumbing.Hash,
 ) error {
 	syntheticCount := countSyntheticEntries(sequence)
+
+	sidecarBlobHash, err := lookupOverlaySidecarBlob(repo, overlayTreeHash)
+	if err != nil {
+		return err
+	}
 
 	var (
 		lastHash     plumbing.Hash
@@ -284,7 +296,7 @@ func replayInterleavedHistory(
 		}
 
 		if entry.upstreamCommit != nil {
-			hash, err := replayUpstreamCommit(repo, entry.upstreamCommit, lastHash)
+			hash, err := replayUpstreamCommit(repo, entry.upstreamCommit, lastHash, sidecarBlobHash)
 			if err != nil {
 				return err
 			}
@@ -317,12 +329,12 @@ func replayInterleavedHistory(
 }
 
 // replayUpstreamCommit recreates an upstream commit with a new parent and a
-// spec-flipped tree. Author, committer, and message are preserved; the tree
-// has its spec's '%changelog' body rewritten to '%autochangelog' (no sidecar)
-// so rpmautospec sees a continuous autochangelog chain across replayed
-// upstream commits. The kept import-commit (handled directly in
-// [replayInterleavedHistory]) retains its original tree and acts as the seed
-// boundary where rpmautospec stops walking.
+// rebuilt tree. The spec's '%changelog' body is rewritten to '%autochangelog'
+// and, when the overlay contained a 'changelog' sidecar, the same sidecar
+// blob is injected next to the spec. This keeps rpmautospec's chain unbroken
+// (both the autochangelog spec body AND the sidecar-file boundary check)
+// from HEAD back to the kept import-commit, which retains its original tree
+// and acts as the seed where rpmautospec stops walking.
 //
 // Merge commits (multiple parents) are linearized by replaying them as
 // single-parent commits.
@@ -330,6 +342,7 @@ func replayUpstreamCommit(
 	repo *gogit.Repository,
 	commit *object.Commit,
 	parentHash plumbing.Hash,
+	sidecarBlobHash plumbing.Hash,
 ) (plumbing.Hash, error) {
 	if len(commit.ParentHashes) > 1 {
 		slog.Debug("Linearizing merge commit in upstream history",
@@ -337,7 +350,7 @@ func replayUpstreamCommit(
 			"parentCount", len(commit.ParentHashes))
 	}
 
-	treeHash, err := flipUpstreamSpecChangelogInTree(repo, commit.TreeHash)
+	treeHash, err := flipUpstreamSpecChangelogInTree(repo, commit.TreeHash, sidecarBlobHash)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("flip %%changelog in replayed upstream tree:\n%w", err)
 	}

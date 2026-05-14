@@ -1072,6 +1072,20 @@ func TestCommitInterleavedHistory_ReplayedUpstreamHasAutochangelogBody(t *testin
 	require.NoError(t, err)
 	require.NoError(t, overlayFile.Close())
 
+	// The static-changelog materialization step writes a 'changelog' sidecar
+	// alongside the spec. The synthetic-history code is expected to inject
+	// the same sidecar blob into every replayed upstream commit so that
+	// rpmautospec's sidecar-boundary check doesn't terminate the walk above
+	// the kept import-commit.
+	const changelogSidecarContent = "* Mon Jan 01 2024 Pre <pre@example.com> - 0.9-1\n- ancient static entry\n"
+
+	sidecar, err := memFS.Create("changelog")
+	require.NoError(t, err)
+
+	_, err = sidecar.Write([]byte(changelogSidecarContent))
+	require.NoError(t, err)
+	require.NoError(t, sidecar.Close())
+
 	changes := []sources.FingerprintChange{
 		{
 			CommitMetadata: sources.CommitMetadata{
@@ -1139,6 +1153,13 @@ func TestCommitInterleavedHistory_ReplayedUpstreamHasAutochangelogBody(t *testin
 	assert.Equal(t, sidecarContent, replayedSidecar,
 		"replayed upstream tree must preserve non-spec sibling files byte-for-byte")
 
+	// The 'changelog' sidecar (from the overlay tree) must also be injected
+	// into the replayed upstream tree so rpmautospec's sidecar-boundary
+	// check doesn't terminate the walk above the kept import-commit.
+	replayedChangelogSidecar := readSpecFromTree(t, repo, replayed.TreeHash, "changelog")
+	assert.Equal(t, changelogSidecarContent, replayedChangelogSidecar,
+		"replayed upstream tree must carry the same 'changelog' sidecar blob as HEAD")
+
 	// Position 3 is the kept import-commit. Its tree must be untouched.
 	importCommit := logCommits[3]
 	require.Contains(t, importCommit.Message, "upstream: v1.0",
@@ -1152,6 +1173,17 @@ func TestCommitInterleavedHistory_ReplayedUpstreamHasAutochangelogBody(t *testin
 		"kept import-commit spec must retain its original static %%changelog body")
 	assert.NotContains(t, importSpecBody, "%autochangelog",
 		"kept import-commit spec must NOT contain %%autochangelog")
+
+	// The kept import-commit must NOT carry the 'changelog' sidecar — its
+	// absence is exactly what marks it as the seed boundary where
+	// rpmautospec terminates the walk.
+	importTree, err := repo.TreeObject(importCommit.TreeHash)
+	require.NoError(t, err)
+
+	for i := range importTree.Entries {
+		assert.NotEqual(t, "changelog", importTree.Entries[i].Name,
+			"kept import-commit tree must NOT contain the 'changelog' sidecar (acts as the seed boundary)")
+	}
 }
 
 // writeSpecAndCommit overwrites the named spec in memFS, stages all working
