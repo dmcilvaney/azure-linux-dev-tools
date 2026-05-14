@@ -3,6 +3,21 @@
   "$id": "https://github.com/microsoft/azure-linux-dev-tools/internal/projectconfig/config-file",
   "$ref": "#/$defs/ConfigFile",
   "$defs": {
+    "ChangelogConfig": {
+      "properties": {
+        "calculation": {
+          "type": "string",
+          "enum": [
+            "auto"
+          ],
+          "title": "Changelog calculation",
+          "description": "Controls how the %changelog block is materialized during rendering. Only 'auto' is currently accepted.",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "CheckConfig": {
       "properties": {
         "skip": {
@@ -110,6 +125,11 @@
           "$ref": "#/$defs/ReleaseConfig",
           "title": "Release configuration",
           "description": "Configuration for how the Release tag is managed during rendering."
+        },
+        "changelog": {
+          "$ref": "#/$defs/ChangelogConfig",
+          "title": "Changelog configuration",
+          "description": "Configuration for how the %changelog block is materialized during rendering."
         },
         "overlays": {
           "items": {

@@ -10,6 +10,7 @@ A component definition tells azldev where to find the spec file, how to customiz
 |-------|----------|------|----------|-------------|
 | Spec source | `spec` | [SpecSource](#spec-source) | No | Where to find the spec file for this component. Inherited from distro defaults if not specified. |
 | Release config | `release` | [ReleaseConfig](#release-configuration) | No | Controls how the Release tag is managed during rendering |
+| Changelog config | `changelog` | [ChangelogConfig](#changelog-configuration) | No | Controls how the `%changelog` block is materialized during rendering |
 | Overlays | `overlays` | array of [Overlay](overlays.md) | No | Modifications to apply to the spec and/or source files |
 | Build config | `build` | [BuildConfig](#build-configuration) | No | Build-time options (macros, conditionals, check config) |
 | Render config | `render` | [RenderConfig](#render-configuration) | No | Options controlling spec rendering behavior |
@@ -126,6 +127,16 @@ calculation = "autorelease"
 [components.kernel.release]
 calculation = "manual"
 ```
+
+## Changelog Configuration
+
+The `[components.<name>.changelog]` section controls how azldev materializes the `%changelog` block during rendering.
+
+| Field | TOML Key | Type | Required | Description |
+|-------|----------|------|----------|-------------|
+| Calculation | `calculation` | string | No | Currently only `"auto"` (the default) is accepted. |
+
+Only `"auto"` is accepted today; explicit `"autochangelog"`, `"static"`, and `"manual"` modes are reserved for the static-`%changelog` materialization work and are rejected by validation in the meantime.
 
 ## Render Configuration
 

@@ -40,6 +40,9 @@ func setupTestSpec(t *testing.T, testEnv *testutils.TestEnv, path string) projec
 		Release: projectconfig.ReleaseConfig{
 			Calculation: projectconfig.ReleaseCalculationAuto,
 		},
+		Changelog: projectconfig.ChangelogConfig{
+			Calculation: projectconfig.ChangelogCalculationAuto,
+		},
 	}
 }
 
@@ -51,6 +54,9 @@ func addTestComponentToConfig(t *testing.T, env *testutils.TestEnv) projectconfi
 		Name: "test-component",
 		Release: projectconfig.ReleaseConfig{
 			Calculation: projectconfig.ReleaseCalculationAuto,
+		},
+		Changelog: projectconfig.ChangelogConfig{
+			Calculation: projectconfig.ChangelogCalculationAuto,
 		},
 	}
 
@@ -271,6 +277,9 @@ func TestFindAllComponents_MergesComponentPresentBySpecAndConfig(t *testing.T) {
 		},
 		Release: projectconfig.ReleaseConfig{
 			Calculation: projectconfig.ReleaseCalculationAuto,
+		},
+		Changelog: projectconfig.ChangelogConfig{
+			Calculation: projectconfig.ChangelogCalculationAuto,
 		},
 	}
 

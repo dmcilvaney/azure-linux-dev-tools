@@ -497,6 +497,10 @@ func (r *Resolver) createComponentFromConfig(componentConfig *projectconfig.Comp
 		componentConfig.Release.Calculation = projectconfig.ReleaseCalculationAuto
 	}
 
+	if componentConfig.Changelog.Calculation == "" {
+		componentConfig.Changelog.Calculation = projectconfig.ChangelogCalculationAuto
+	}
+
 	// Populate locked state onto the component config. This makes lock data
 	// available to all downstream consumers (render, build, prepare-sources,
 	// diff-sources) without each needing lock-file awareness.

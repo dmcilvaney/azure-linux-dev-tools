@@ -244,6 +244,35 @@ func TestReleaseCalculationValidation(t *testing.T) {
 	}))
 }
 
+func TestChangelogCalculationValidation(t *testing.T) {
+	validate := validator.New()
+
+	// Empty (omitted) is valid — resolved to "auto" by the component resolver.
+	require.NoError(t, validate.Struct(&projectconfig.ChangelogConfig{}))
+
+	// Explicit "auto" is valid.
+	require.NoError(t, validate.Struct(&projectconfig.ChangelogConfig{
+		Calculation: projectconfig.ChangelogCalculationAuto,
+	}))
+
+	// The other constants are defined but not yet accepted by validation
+	// (the static-changelog materialization path lands in a later change).
+	require.Error(t, validate.Struct(&projectconfig.ChangelogConfig{
+		Calculation: projectconfig.ChangelogCalculationAutochangelog,
+	}))
+	require.Error(t, validate.Struct(&projectconfig.ChangelogConfig{
+		Calculation: projectconfig.ChangelogCalculationStatic,
+	}))
+	require.Error(t, validate.Struct(&projectconfig.ChangelogConfig{
+		Calculation: projectconfig.ChangelogCalculationManual,
+	}))
+
+	// Garbage value is also rejected.
+	require.Error(t, validate.Struct(&projectconfig.ChangelogConfig{
+		Calculation: "nope",
+	}))
+}
+
 func TestResolveComponentConfig(t *testing.T) {
 	distroDefaults := projectconfig.ComponentConfig{
 		Spec: projectconfig.SpecSource{
