@@ -61,7 +61,7 @@ func TestTryMaterializeStaticChangelog_ManualSkips(t *testing.T) {
 	})
 
 	// No spec file needed — should skip before reading anything.
-	err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir)
+	err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir, "")
 	require.NoError(t, err)
 }
 
@@ -77,7 +77,7 @@ func TestTryMaterializeStaticChangelog_AutochangelogSkips(t *testing.T) {
 	})
 
 	// No spec file needed — should skip before reading anything.
-	err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir)
+	err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir, "")
 	require.NoError(t, err)
 }
 
@@ -94,7 +94,7 @@ func TestTryMaterializeStaticChangelog_AutoSkipsForAutochangelog(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.NoError(t, err)
 
 	// No sidecar file should have been written.
@@ -120,7 +120,7 @@ func TestTryMaterializeStaticChangelog_AutoMaterializesStatic(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.NoError(t, err)
 
 	// Spec should now have %autochangelog in its %changelog body.
@@ -154,7 +154,7 @@ func TestTryMaterializeStaticChangelog_ExplicitStaticMaterializes(t *testing.T) 
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.NoError(t, err)
 
 	specContent, err := fileutils.ReadFile(memFS, specPath)
@@ -180,7 +180,7 @@ func TestTryMaterializeStaticChangelog_ExplicitStaticErrorsOnAutochangelog(t *te
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `changelog.calculation = "autochangelog"`)
 }
@@ -199,7 +199,7 @@ func TestTryMaterializeStaticChangelog_ExplicitStaticErrorsOnMissingSection(t *t
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no %changelog section")
 }
@@ -217,7 +217,7 @@ func TestTryMaterializeStaticChangelog_AutoSkipsWhenNoChangelogSection(t *testin
 		},
 	})
 
-	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"))
+	err := preparer.tryMaterializeStaticChangelog(comp, filepath.Join(testSourcesDir, "test-pkg"), "")
 	require.NoError(t, err)
 }
 

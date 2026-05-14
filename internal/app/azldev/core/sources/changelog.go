@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 
+	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/microsoft/azure-linux-dev-tools/internal/app/azldev/core/components"
 	"github.com/microsoft/azure-linux-dev-tools/internal/global/opctx"
 	"github.com/microsoft/azure-linux-dev-tools/internal/projectconfig"
@@ -50,6 +52,7 @@ var autochangelogPattern = regexp.MustCompile(`%(\{[?]?autochangelog($|[}\s])|au
 func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 	component components.Component,
 	sourcesDirPath string,
+	importCommit string,
 ) error {
 	calc := component.GetConfig().Changelog.Calculation
 
@@ -67,10 +70,10 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 		return nil
 
 	case projectconfig.ChangelogCalculationStatic:
-		return p.materializeStaticChangelog(component, sourcesDirPath, true)
+		return p.materializeStaticChangelog(component, sourcesDirPath, importCommit, true)
 
 	case projectconfig.ChangelogCalculationAuto, "":
-		return p.materializeStaticChangelog(component, sourcesDirPath, false)
+		return p.materializeStaticChangelog(component, sourcesDirPath, importCommit, false)
 
 	default:
 		return fmt.Errorf("component %#q has unknown changelog calculation mode %#q",
@@ -82,6 +85,16 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 // body, writes it to a sidecar 'changelog' file next to the spec, and
 // rewrites the spec's body to a single '%autochangelog' line.
 //
+// The sidecar content is taken from the import-commit's spec '%changelog'
+// body when available (so it represents only the entries strictly older than
+// the seed commit where rpmautospec stops its dynamic walk). When the
+// import-commit cannot be read (empty hash, no sources git repo, commit
+// missing, spec missing, parse error) the working-dir spec body is used as a
+// fallback. Without this boundary, every entry the dynamic walk regenerates
+// from synthetic+replayed-upstream commits would also appear verbatim in the
+// static sidecar portion below it, producing duplicates in the rendered
+// '%changelog'.
+//
 // When requireStatic is true (explicit "static" mode), encountering a spec
 // that uses '%autochangelog' or has no '%changelog' section produces an
 // error pointing the user at the correct calculation value. When false
@@ -89,6 +102,7 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 func (p *sourcePreparerImpl) materializeStaticChangelog(
 	component components.Component,
 	sourcesDirPath string,
+	importCommit string,
 	requireStatic bool,
 ) error {
 	specPath, err := p.resolveSpecPath(component, sourcesDirPath)
@@ -136,8 +150,13 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 		return nil
 	}
 
+	// Prefer the import-commit's spec body for the sidecar so the sidecar
+	// only contains entries strictly older than the rpmautospec walk
+	// boundary. Fall back to the working-dir body when unavailable.
+	sidecarBody, sidecarSource := pickSidecarBody(sourcesDirPath, importCommit, filepath.Base(specPath), body)
+
 	sidecarPath := filepath.Join(filepath.Dir(specPath), ChangelogSidecarFilename)
-	if err := writeChangelogSidecar(p.fs, sidecarPath, body); err != nil {
+	if err := writeChangelogSidecar(p.fs, sidecarPath, sidecarBody); err != nil {
 		return fmt.Errorf(
 			"failed to write %#q sidecar for component %#q:\n%w",
 			ChangelogSidecarFilename, component.GetName(), err)
@@ -155,10 +174,81 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 
 	slog.Info("Materialized static %%changelog via rpmautospec",
 		"component", component.GetName(),
-		"preservedEntryLines", len(body),
+		"preservedEntryLines", len(sidecarBody),
+		"sidecarSource", sidecarSource,
 		"sidecar", sidecarPath)
 
 	return nil
+}
+
+// pickSidecarBody chooses the changelog body to write into the sidecar.
+// When importCommit is non-empty and the sources git repo + import-commit's
+// spec are readable, returns that body (tagged "import-commit"); otherwise
+// returns the working-dir body unchanged (tagged "working-dir"). The
+// source tag is for observability only.
+func pickSidecarBody(
+	sourcesDirPath, importCommit, specBasename string,
+	workingBody []string,
+) ([]string, string) {
+	if importCommit == "" {
+		return workingBody, "working-dir"
+	}
+
+	importBody, err := extractChangelogBodyFromImportCommit(sourcesDirPath, importCommit, specBasename)
+	if err != nil {
+		slog.Debug("Falling back to working-dir spec body for sidecar; cannot read import-commit spec",
+			"importCommit", importCommit, "err", err)
+
+		return workingBody, "working-dir"
+	}
+
+	return importBody, "import-commit"
+}
+
+// extractChangelogBodyFromImportCommit opens the sources git repo, reads the
+// spec file at the import-commit's tree (looked up by basename), and returns
+// its '%changelog' body. Errors are returned verbatim; callers are expected
+// to treat them as fallback signals, not hard failures.
+func extractChangelogBodyFromImportCommit(
+	sourcesDirPath, importCommit, specBasename string,
+) ([]string, error) {
+	repo, err := gogit.PlainOpen(sourcesDirPath)
+	if err != nil {
+		return nil, fmt.Errorf("open sources git repo at %#q:\n%w", sourcesDirPath, err)
+	}
+
+	commit, err := repo.CommitObject(plumbing.NewHash(importCommit))
+	if err != nil {
+		return nil, fmt.Errorf("look up import commit %#q:\n%w", importCommit, err)
+	}
+
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read import commit tree:\n%w", err)
+	}
+
+	file, err := tree.File(specBasename)
+	if err != nil {
+		return nil, fmt.Errorf("find spec %#q in import tree:\n%w", specBasename, err)
+	}
+
+	reader, err := file.Reader()
+	if err != nil {
+		return nil, fmt.Errorf("read spec blob from import tree:\n%w", err)
+	}
+	defer reader.Close()
+
+	specFile, err := spec.OpenSpec(reader)
+	if err != nil {
+		return nil, fmt.Errorf("parse spec from import tree:\n%w", err)
+	}
+
+	body, err := ExtractStaticChangelogBody(specFile)
+	if err != nil {
+		return nil, fmt.Errorf("extract %%changelog body from import spec:\n%w", err)
+	}
+
+	return body, nil
 }
 
 // changelogBodyUsesAutochangelog reports whether the first non-blank line in

@@ -443,8 +443,10 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 	}
 
 	// Materialize static '%changelog' entries via rpmautospec when configured.
-	// See [tryMaterializeStaticChangelog] for the per-mode behavior.
-	if err := p.tryMaterializeStaticChangelog(component, sourcesDirPath); err != nil {
+	// See [tryMaterializeStaticChangelog] for the per-mode behavior. The
+	// importCommit is passed so the sidecar can be sourced from the seed
+	// commit's spec body, avoiding duplicates with the dynamic walk.
+	if err := p.tryMaterializeStaticChangelog(component, sourcesDirPath, importCommit); err != nil {
 		return fmt.Errorf("failed to materialize %%changelog:\n%w", err)
 	}
 
