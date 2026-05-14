@@ -436,10 +436,11 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return nil
 	}
 
-	// Adjust the Release tag before staging changes. See [tryBumpStaticRelease]
-	// for the handling of %autorelease, static integers, and non-standard values.
-	if err := p.tryBumpStaticRelease(component, sourcesDirPath, len(changes)); err != nil {
-		return fmt.Errorf("failed to apply release bump:\n%w", err)
+	// Adjust the Release tag before staging changes. For non-manual modes
+	// the spec is flipped to %autorelease so rpmautospec derives the release
+	// number from the synthetic git history.
+	if err := p.tryApplyReleaseCalculation(component, sourcesDirPath); err != nil {
+		return fmt.Errorf("failed to apply release calculation:\n%w", err)
 	}
 
 	// Materialize static '%changelog' entries via rpmautospec when configured.

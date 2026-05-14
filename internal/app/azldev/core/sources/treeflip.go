@@ -110,6 +110,18 @@ func flipSpecBlob(repo *gogit.Repository, specEntry *object.TreeEntry) (plumbing
 		return plumbing.ZeroHash, false, fmt.Errorf("flip %%changelog in %#q:\n%w", specEntry.Name, err)
 	}
 
+	// Also flip the Release tag to %autorelease so rpmautospec's per-commit
+	// body check sees the macro throughout the replayed history (not just at
+	// HEAD). Without this, rpmautospec may not count commits correctly for
+	// %autorelease because it reads the spec at each commit.
+	if err := FlipReleaseToAutorelease(specFile); err != nil {
+		if errors.Is(err, spec.ErrNoSuchTag) {
+			// Spec has no Release tag — unusual but not fatal.
+		} else {
+			return plumbing.ZeroHash, false, fmt.Errorf("flip Release in %#q:\n%w", specEntry.Name, err)
+		}
+	}
+
 	var buf bytes.Buffer
 	if err := specFile.Serialize(&buf); err != nil {
 		return plumbing.ZeroHash, false, fmt.Errorf("serialize %#q:\n%w", specEntry.Name, err)
