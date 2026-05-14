@@ -793,3 +793,178 @@ func TestBuildDirtyChange(t *testing.T) {
 		})
 	}
 }
+
+// TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream is a
+// guardrail asserting that no overlay leaks into historical commits of the
+// synthetic dist-git. Tooling that walks the dist-git history (e.g.
+// rpmautospec) must see the raw upstream spec at each historical commit; an
+// overlay-modified spec at any commit below HEAD would corrupt that history.
+//
+// The invariant: in the rebuilt history, every commit except the final HEAD
+// commit has a tree hash equal to one of the upstream commits' tree hashes.
+// Replayed upstream commits preserve their original tree; empty synthetic
+// intermediates carry the tree of the preceding upstream commit. Only HEAD
+// carries the overlay-modified tree.
+func TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Upstream commit 1 — a distinct tree.
+	file1, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file1.Write([]byte("Name: package\nVersion: 1.0\nRelease: 1\n"))
+	require.NoError(t, err)
+	require.NoError(t, file1.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1Hash, err := worktree.Commit("upstream: v1.0", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	upstream1, err := repo.CommitObject(upstream1Hash)
+	require.NoError(t, err)
+
+	// Upstream commit 2 — a different tree.
+	file2, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file2.Write([]byte("Name: package\nVersion: 2.0\nRelease: 1\n"))
+	require.NoError(t, err)
+	require.NoError(t, file2.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream2Hash, err := worktree.Commit("upstream: v2.0", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	upstream2, err := repo.CommitObject(upstream2Hash)
+	require.NoError(t, err)
+
+	require.NotEqual(t, upstream1.TreeHash, upstream2.TreeHash,
+		"test setup: upstream trees must differ to make the assertion meaningful")
+
+	// Simulate overlay modification in the working tree. This must produce a
+	// tree distinct from any upstream tree so the HEAD assertion is meaningful.
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = specFile.Write([]byte("Name: package\nVersion: 2.0\nRelease: 1\n# overlay-applied\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	// One synthetic change for each upstream commit. The first interleaves
+	// between upstream1 and upstream2; the second appends on top of upstream2.
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "proj-aaa",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply patch on v1.0",
+			},
+			UpstreamCommit: upstream1Hash.String(),
+		},
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "proj-bbb",
+				Author:      "Bob",
+				AuthorEmail: "bob@example.com",
+				Timestamp:   time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply patch on v2.0",
+			},
+			UpstreamCommit: upstream2Hash.String(),
+		},
+	}
+
+	err = sources.CommitInterleavedHistory(repo, changes, upstream1Hash.String())
+	require.NoError(t, err)
+
+	// Walk the rebuilt history newest-first.
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	var logCommits []*object.Commit
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		logCommits = append(logCommits, c)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Len(t, logCommits, 4, "expected 2 upstream + 2 synthetic commits")
+
+	// Expected sequence (newest first):
+	//   logCommits[0]: synthetic "v2.0" (HEAD)         — tree == overlay (differs from any upstream).
+	//   logCommits[1]: replayed upstream v2.0          — tree == upstream2.TreeHash.
+	//   logCommits[2]: synthetic intermediate on v1.0  — tree == upstream1.TreeHash (tree-preserving).
+	//   logCommits[3]: kept upstream v1.0 (import)     — tree == upstream1.TreeHash.
+
+	headCommit := logCommits[0]
+
+	assert.NotEqual(t, upstream1.TreeHash, headCommit.TreeHash,
+		"HEAD commit must carry the overlay tree, not an upstream tree")
+	assert.NotEqual(t, upstream2.TreeHash, headCommit.TreeHash,
+		"HEAD commit must carry the overlay tree, not an upstream tree")
+
+	// Cross-check via message that we have the right commit in each slot.
+	assert.Contains(t, headCommit.Message, "Apply patch on v2.0",
+		"sanity: HEAD should be the topmost synthetic commit")
+	assert.Contains(t, logCommits[1].Message, "upstream: v2.0",
+		"sanity: position 1 should be replayed upstream v2.0")
+	assert.Contains(t, logCommits[2].Message, "Apply patch on v1.0",
+		"sanity: position 2 should be the interleaved synthetic on v1.0")
+	assert.Contains(t, logCommits[3].Message, "upstream: v1.0",
+		"sanity: position 3 should be the kept import-commit")
+
+	// The core guardrail: historical commits must be tree-equal to an upstream
+	// snapshot. Any deviation means overlay content has leaked into a commit
+	// that rpmautospec will treat as upstream history.
+	assert.Equal(t, upstream2.TreeHash, logCommits[1].TreeHash,
+		"replayed upstream v2.0 must preserve its original tree byte-for-byte")
+	assert.Equal(t, upstream1.TreeHash, logCommits[2].TreeHash,
+		"intermediate synthetic commit must be tree-preserving (no overlay leak)")
+	assert.Equal(t, upstream1.TreeHash, logCommits[3].TreeHash,
+		"kept import-commit must preserve its original tree byte-for-byte")
+
+	// Belt-and-suspenders: every non-HEAD commit's tree must be in the set of
+	// known-good upstream tree hashes. If any future refactor introduces a new
+	// kind of historical commit, this catches it as long as the tree differs
+	// from every upstream snapshot.
+	upstreamTrees := map[plumbing.Hash]struct{}{
+		upstream1.TreeHash: {},
+		upstream2.TreeHash: {},
+	}
+
+	for i, c := range logCommits[1:] {
+		_, ok := upstreamTrees[c.TreeHash]
+		assert.True(t, ok,
+			"historical commit at depth %d has tree %s not matching any upstream snapshot",
+			i+1, c.TreeHash.String())
+	}
+}
