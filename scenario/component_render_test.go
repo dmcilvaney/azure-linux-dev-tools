@@ -540,3 +540,90 @@ func TestRenderBrokenSpecWithGoodSpec(t *testing.T) {
 	markerPath := results.GetProjectOutputPath("SPECS", "b", "broken-pkg", "RENDER_FAILED")
 	require.FileExists(t, markerPath, "RENDER_FAILED marker should exist for broken component")
 }
+
+// TestRenderStaticChangelogMaterialization verifies that a component
+// configured with 'changelog.calculation = "static"' has its pre-import
+// '%changelog' body preserved across the rpmautospec hand-off: the spec is
+// flipped to '%autochangelog' before mock processing, the curated entries
+// are written to a 'changelog' sidecar file next to the spec, and the
+// rendered output contains both the synthetic-history entries that
+// rpmautospec materialized and the preserved entries from the sidecar.
+func TestRenderStaticChangelogMaterialization(t *testing.T) {
+	t.Parallel()
+
+	if testing.Short() {
+		t.Skip("skipping long test")
+	}
+
+	// Custom spec with %autorelease (so the release axis stays out of the
+	// way) and a static %changelog body with a uniquely identifiable entry.
+	const preImportMarker = "static-changelog-scenario-marker"
+
+	specContent := `Name:           static-changelog-pkg
+Version:        1.0.0
+Release:        %autorelease
+Summary:        Static changelog scenario test
+License:        MIT
+BuildArch:      noarch
+
+%description
+Exercises the static-%changelog materialization path.
+
+%build
+echo hello >file.txt
+
+%install
+mkdir -p %{buildroot}/%{_datadir}/static-changelog-pkg
+cp file.txt %{buildroot}/%{_datadir}/static-changelog-pkg/file.txt
+
+%files
+%{_datadir}/static-changelog-pkg
+
+%changelog
+* Mon Jan 01 2024 Pre-Import <pre@example.com> - 1.0.0-1
+- ` + preImportMarker + `
+`
+
+	componentConfig := localComponentConfig("static-changelog-pkg")
+	componentConfig.Changelog = projectconfig.ChangelogConfig{
+		Calculation: projectconfig.ChangelogCalculationStatic,
+	}
+
+	project := projecttest.NewDynamicTestProject(
+		projecttest.AddFile(
+			"specs/static-changelog-pkg/static-changelog-pkg.spec", specContent),
+		projecttest.AddComponent(componentConfig),
+		projecttest.UseTestDefaultConfigs(),
+		projecttest.WithGitRepo(),
+	)
+
+	results := projecttest.NewProjectTest(
+		project,
+		[]string{"component", "render", "static-changelog-pkg", "-o", "project/SPECS"},
+		projecttest.WithTestDefaultConfigs(),
+	).RunInContainer(t)
+
+	output := results.GetJSONResult()
+	require.Len(t, output, 1)
+	assert.Equal(t, "ok", output[0]["status"],
+		"Spec with static %%changelog should render ok")
+
+	renderedSpecPath := results.GetProjectOutputPath(
+		"SPECS", "s", "static-changelog-pkg", "static-changelog-pkg.spec")
+	require.FileExists(t, renderedSpecPath)
+
+	content, err := os.ReadFile(renderedSpecPath)
+	require.NoError(t, err)
+	contentStr := string(content)
+
+	// rpmautospec should have run and expanded %autochangelog.
+	assert.Contains(t, contentStr, "## START: Set by rpmautospec",
+		"rpmautospec should have processed the spec")
+	assert.NotContains(t, contentStr, "%autochangelog",
+		"%%autochangelog should be expanded to real entries")
+
+	// The pre-import entry from the sidecar must survive into the rendered
+	// %changelog block.
+	assert.Contains(t, contentStr, preImportMarker,
+		"Pre-import %%changelog entry should be preserved via the changelog sidecar")
+}

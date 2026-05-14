@@ -8,10 +8,13 @@
         "calculation": {
           "type": "string",
           "enum": [
-            "auto"
+            "auto",
+            "autochangelog",
+            "static",
+            "manual"
           ],
           "title": "Changelog calculation",
-          "description": "Controls how the %changelog block is materialized during rendering. Only 'auto' is currently accepted.",
+          "description": "Controls how the %changelog block is materialized during rendering. Empty or omitted means auto.",
           "default": "auto"
         }
       },

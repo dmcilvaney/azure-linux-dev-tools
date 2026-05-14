@@ -442,6 +442,12 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return fmt.Errorf("failed to apply release bump:\n%w", err)
 	}
 
+	// Materialize static '%changelog' entries via rpmautospec when configured.
+	// See [tryMaterializeStaticChangelog] for the per-mode behavior.
+	if err := p.tryMaterializeStaticChangelog(component, sourcesDirPath); err != nil {
+		return fmt.Errorf("failed to materialize %%changelog:\n%w", err)
+	}
+
 	gitDirPath := filepath.Join(sourcesDirPath, ".git")
 
 	gitDirExists, err := fileutils.Exists(p.fs, gitDirPath)

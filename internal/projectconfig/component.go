@@ -201,13 +201,9 @@ const (
 )
 
 // ChangelogConfig holds %changelog-related configuration for a component.
-//
-// NOTE: Until the static-%changelog materialization path lands, only "auto" is
-// accepted by validation. Other values are defined so call sites can reference
-// the constants, but explicitly setting them is rejected at config-load time.
 type ChangelogConfig struct {
 	// Calculation controls how the %changelog block is materialized during rendering.
-	Calculation ChangelogCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto" jsonschema:"enum=auto,default=auto,title=Changelog calculation,description=Controls how the %changelog block is materialized during rendering. Only 'auto' is currently accepted."`
+	Calculation ChangelogCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto autochangelog static manual" jsonschema:"enum=auto,enum=autochangelog,enum=static,enum=manual,default=auto,title=Changelog calculation,description=Controls how the %changelog block is materialized during rendering. Empty or omitted means auto."`
 }
 
 // FreshnessStatus indicates whether a component's current config matches

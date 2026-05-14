@@ -134,9 +134,29 @@ The `[components.<name>.changelog]` section controls how azldev materializes the
 
 | Field | TOML Key | Type | Required | Description |
 |-------|----------|------|----------|-------------|
-| Calculation | `calculation` | string | No | Currently only `"auto"` (the default) is accepted. |
+| Calculation | `calculation` | string | No | One of `"auto"` (default), `"autochangelog"`, `"static"`, or `"manual"` |
 
-Only `"auto"` is accepted today; explicit `"autochangelog"`, `"static"`, and `"manual"` modes are reserved for the static-`%changelog` materialization work and are rejected by validation in the meantime.
+### Calculation Modes
+
+| Mode | Behavior |
+|------|----------|
+| `auto` | Auto-detects from the spec's `%changelog` body. If `%autochangelog` is found, rpmautospec handles it. If a static `%changelog` body is found, azldev preserves it via the rpmautospec sidecar mechanism (see `static` below). If no `%changelog` section is present, no action is taken. |
+| `autochangelog` | Explicitly declares the spec uses `%autochangelog`. Skips all `%changelog` manipulation. |
+| `static` | Explicitly declares the spec ships a static `%changelog` block. Before rendering, azldev moves the existing entries into a `changelog` file next to the spec and rewrites the spec body to `%autochangelog`. rpmautospec then materializes new entries from the synthetic git history and appends the preserved entries below them, yielding a single `%changelog` block in the rendered spec that covers both synthetic and pre-existing history. Errors if the spec already uses `%autochangelog` or has no `%changelog` section. |
+| `manual` | Skips all automatic `%changelog` manipulation. Use for components that manage their own changelog (e.g. kernel). |
+
+Most components use `auto` (the default) and need no changelog configuration. The release and changelog axes are independent; for example, a component may pair `release.calculation = "autorelease"` with `changelog.calculation = "static"` if its spec uses `%autorelease` but ships a curated static `%changelog`.
+
+```toml
+# Spec ships a static %changelog that should be preserved during the
+# transition to rpmautospec-driven changelogs:
+[components.curl.changelog]
+calculation = "static"
+
+# Component that manages its own changelog (e.g. kernel):
+[components.kernel.changelog]
+calculation = "manual"
+```
 
 ## Render Configuration
 
