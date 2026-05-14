@@ -258,8 +258,12 @@ func buildInterleavedSequence(
 // replayInterleavedHistory walks the interleaved sequence and creates new
 // commit objects with correct tree hashes and parent chains. The first upstream
 // commit (import-commit) is kept as-is; subsequent upstream commits are
-// recreated with updated parents. Synthetic commits are empty except for the
-// very last one, which carries the overlay tree.
+// recreated with updated parents. All synthetic commits carry the overlay
+// tree so that the prepared spec (including any '%autochangelog' flip from
+// [sourcePreparerImpl.tryMaterializeStaticChangelog]) is observable starting
+// at the first synthetic commit. Without this, rpmautospec sees the overlay
+// only at HEAD and treats it as the single seed commit, materializing no
+// per-commit changelog entries.
 func replayInterleavedHistory(
 	repo *gogit.Repository,
 	sequence []interleavedEntry,
@@ -269,14 +273,12 @@ func replayInterleavedHistory(
 
 	var (
 		lastHash     plumbing.Hash
-		lastTreeHash plumbing.Hash
 		syntheticIdx int
 	)
 
 	for idx, entry := range sequence {
 		if idx == 0 && entry.upstreamCommit != nil {
 			lastHash = entry.upstreamCommit.Hash
-			lastTreeHash = entry.upstreamCommit.TreeHash
 
 			continue
 		}
@@ -288,28 +290,19 @@ func replayInterleavedHistory(
 			}
 
 			lastHash = hash
-			lastTreeHash = entry.upstreamCommit.TreeHash
 
 			continue
 		}
 
 		syntheticIdx++
 
-		isLast := syntheticIdx == syntheticCount
-
-		treeHash := lastTreeHash
-		if isLast {
-			treeHash = overlayTreeHash
-		}
-
-		hash, err := createSyntheticCommit(repo, entry.syntheticChange, treeHash, lastHash,
+		hash, err := createSyntheticCommit(repo, entry.syntheticChange, overlayTreeHash, lastHash,
 			syntheticIdx, syntheticCount)
 		if err != nil {
 			return err
 		}
 
 		lastHash = hash
-		lastTreeHash = treeHash
 	}
 
 	if err := updateHead(repo, lastHash); err != nil {
@@ -323,10 +316,16 @@ func replayInterleavedHistory(
 	return nil
 }
 
-// replayUpstreamCommit recreates an upstream commit with a new parent, preserving
-// tree content, author, committer, and message. Merge commits (multiple parents)
-// are linearized by replaying them as single-parent commits — the tree hash is
-// preserved so the merged content is retained.
+// replayUpstreamCommit recreates an upstream commit with a new parent and a
+// spec-flipped tree. Author, committer, and message are preserved; the tree
+// has its spec's '%changelog' body rewritten to '%autochangelog' (no sidecar)
+// so rpmautospec sees a continuous autochangelog chain across replayed
+// upstream commits. The kept import-commit (handled directly in
+// [replayInterleavedHistory]) retains its original tree and acts as the seed
+// boundary where rpmautospec stops walking.
+//
+// Merge commits (multiple parents) are linearized by replaying them as
+// single-parent commits.
 func replayUpstreamCommit(
 	repo *gogit.Repository,
 	commit *object.Commit,
@@ -338,7 +337,12 @@ func replayUpstreamCommit(
 			"parentCount", len(commit.ParentHashes))
 	}
 
-	hash, err := createCommitObject(repo, commit.TreeHash, parentHash,
+	treeHash, err := flipUpstreamSpecChangelogInTree(repo, commit.TreeHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("flip %%changelog in replayed upstream tree:\n%w", err)
+	}
+
+	hash, err := createCommitObject(repo, treeHash, parentHash,
 		commit.Author, commit.Committer, commit.Message)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to replay upstream commit:\n%w", err)

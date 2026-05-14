@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-billy/v5"
 	memfs "github.com/go-git/go-billy/v5/memfs"
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -794,18 +795,19 @@ func TestBuildDirtyChange(t *testing.T) {
 	}
 }
 
-// TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream is a
-// guardrail asserting that no overlay leaks into historical commits of the
-// synthetic dist-git. Tooling that walks the dist-git history (e.g.
-// rpmautospec) must see the raw upstream spec at each historical commit; an
-// overlay-modified spec at any commit below HEAD would corrupt that history.
+// TestCommitInterleavedHistory_SyntheticCommitsCarryOverlayTree asserts that
+// every synthetic commit in the rebuilt dist-git history carries the overlay
+// tree, while upstream-derived commits (the kept import-commit and any
+// replayed upstreams) preserve their original tree byte-for-byte.
 //
-// The invariant: in the rebuilt history, every commit except the final HEAD
-// commit has a tree hash equal to one of the upstream commits' tree hashes.
-// Replayed upstream commits preserve their original tree; empty synthetic
-// intermediates carry the tree of the preceding upstream commit. Only HEAD
-// carries the overlay-modified tree.
-func TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream(t *testing.T) {
+// Rationale: rpmautospec walks the dist-git history looking for the seed
+// commit that introduced '%autochangelog'. If only HEAD carries the overlay,
+// the seed is HEAD itself and no per-commit entries are materialized above
+// the static '%changelog' sidecar. Putting the overlay tree on every
+// synthetic commit lets rpmautospec see the autochangelog flip as far back
+// as the first synthetic commit, so each synthetic commit becomes a
+// changelog entry.
+func TestCommitInterleavedHistory_SyntheticCommitsCarryOverlayTree(t *testing.T) {
 	memFS := memfs.New()
 	storer := memory.NewStorage()
 
@@ -920,17 +922,17 @@ func TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream(t *testing.
 	require.Len(t, logCommits, 4, "expected 2 upstream + 2 synthetic commits")
 
 	// Expected sequence (newest first):
-	//   logCommits[0]: synthetic "v2.0" (HEAD)         — tree == overlay (differs from any upstream).
+	//   logCommits[0]: synthetic "v2.0" (HEAD)         — tree == overlay.
 	//   logCommits[1]: replayed upstream v2.0          — tree == upstream2.TreeHash.
-	//   logCommits[2]: synthetic intermediate on v1.0  — tree == upstream1.TreeHash (tree-preserving).
+	//   logCommits[2]: synthetic intermediate on v1.0  — tree == overlay (NOT upstream1).
 	//   logCommits[3]: kept upstream v1.0 (import)     — tree == upstream1.TreeHash.
 
 	headCommit := logCommits[0]
 
 	assert.NotEqual(t, upstream1.TreeHash, headCommit.TreeHash,
-		"HEAD commit must carry the overlay tree, not an upstream tree")
+		"HEAD synthetic commit must carry the overlay tree, not an upstream tree")
 	assert.NotEqual(t, upstream2.TreeHash, headCommit.TreeHash,
-		"HEAD commit must carry the overlay tree, not an upstream tree")
+		"HEAD synthetic commit must carry the overlay tree, not an upstream tree")
 
 	// Cross-check via message that we have the right commit in each slot.
 	assert.Contains(t, headCommit.Message, "Apply patch on v2.0",
@@ -942,29 +944,283 @@ func TestCommitInterleavedHistory_HistoricalTreesByteEqualToUpstream(t *testing.
 	assert.Contains(t, logCommits[3].Message, "upstream: v1.0",
 		"sanity: position 3 should be the kept import-commit")
 
-	// The core guardrail: historical commits must be tree-equal to an upstream
-	// snapshot. Any deviation means overlay content has leaked into a commit
-	// that rpmautospec will treat as upstream history.
+	// Core invariant: upstream-derived commits preserve their original tree;
+	// every synthetic commit (including intermediates) carries the overlay
+	// tree so rpmautospec sees the autochangelog flip in every synthetic
+	// commit and materializes a changelog entry for each one.
 	assert.Equal(t, upstream2.TreeHash, logCommits[1].TreeHash,
 		"replayed upstream v2.0 must preserve its original tree byte-for-byte")
-	assert.Equal(t, upstream1.TreeHash, logCommits[2].TreeHash,
-		"intermediate synthetic commit must be tree-preserving (no overlay leak)")
+	assert.Equal(t, headCommit.TreeHash, logCommits[2].TreeHash,
+		"intermediate synthetic commit must carry the same overlay tree as HEAD")
+	assert.NotEqual(t, upstream1.TreeHash, logCommits[2].TreeHash,
+		"intermediate synthetic commit must NOT inherit the upstream tree")
+	assert.NotEqual(t, upstream2.TreeHash, logCommits[2].TreeHash,
+		"intermediate synthetic commit must NOT inherit the upstream tree")
 	assert.Equal(t, upstream1.TreeHash, logCommits[3].TreeHash,
 		"kept import-commit must preserve its original tree byte-for-byte")
+}
 
-	// Belt-and-suspenders: every non-HEAD commit's tree must be in the set of
-	// known-good upstream tree hashes. If any future refactor introduces a new
-	// kind of historical commit, this catches it as long as the tree differs
-	// from every upstream snapshot.
-	upstreamTrees := map[plumbing.Hash]struct{}{
-		upstream1.TreeHash: {},
-		upstream2.TreeHash: {},
+// TestCommitInterleavedHistory_ReplayedUpstreamHasAutochangelogBody asserts
+// that when the upstream history spans multiple versions, the replayed
+// upstream commits (intermediate, not the kept import-commit) have their
+// spec's '%changelog' body flipped to '%autochangelog' in the rebuilt tree.
+//
+// This closes the version-bump gap: without the flip, the static body in a
+// replayed upstream commit would break the autochangelog chain, causing
+// rpmautospec to stop walking history at that commit and drop all synthetic
+// entries below it. The kept import-commit retains its original static body
+// and acts as the seed where rpmautospec terminates the walk.
+func TestCommitInterleavedHistory_ReplayedUpstreamHasAutochangelogBody(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// A sibling file present in every upstream tree. The tree-rebuild path
+	// in flipUpstreamSpecChangelogInTree must preserve non-spec entries
+	// byte-for-byte; regressions there would silently drop sidecar files
+	// (sources, patches) from replayed upstream commits.
+	const sidecarName = "sources"
+
+	const sidecarContent = "SHA512 (package-1.0.tar.xz) = deadbeef\n"
+
+	sidecarFile, err := memFS.Create(sidecarName)
+	require.NoError(t, err)
+
+	_, err = sidecarFile.Write([]byte(sidecarContent))
+	require.NoError(t, err)
+	require.NoError(t, sidecarFile.Close())
+
+	// Upstream commit 1 — spec with a static %changelog body. This becomes
+	// the kept import-commit (seed; not flipped).
+	const importSpec = "Name: package\n" +
+		"Version: 1.0\n" +
+		"Release: 1%{?dist}\n" +
+		"Summary: Test\n" +
+		"License: MIT\n" +
+		"\n" +
+		"%description\n" +
+		"Test.\n" +
+		"\n" +
+		"%changelog\n" +
+		"* Mon Jan 01 2024 Upstream <up@fedora.org> - 1.0-1\n" +
+		"- import-commit static entry\n"
+
+	writeSpecAndCommit(t, worktree, memFS, "package.spec", importSpec,
+		"upstream: v1.0",
+		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	upstream1Hash := head.Hash()
+	upstream1, err := repo.CommitObject(upstream1Hash)
+	require.NoError(t, err)
+
+	// Upstream commit 2 — spec with a different static %changelog body.
+	// This will be replayed; its body must be flipped to %autochangelog.
+	const replayedSpec = "Name: package\n" +
+		"Version: 2.0\n" +
+		"Release: 1%{?dist}\n" +
+		"Summary: Test\n" +
+		"License: MIT\n" +
+		"\n" +
+		"%description\n" +
+		"Test.\n" +
+		"\n" +
+		"%changelog\n" +
+		"* Sat Jun 01 2024 Upstream <up@fedora.org> - 2.0-1\n" +
+		"- replayed upstream static entry\n" +
+		"\n" +
+		"* Mon Jan 01 2024 Upstream <up@fedora.org> - 1.0-1\n" +
+		"- import-commit static entry\n"
+
+	writeSpecAndCommit(t, worktree, memFS, "package.spec", replayedSpec,
+		"upstream: v2.0",
+		time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC))
+
+	head, err = repo.Head()
+	require.NoError(t, err)
+
+	upstream2Hash := head.Hash()
+	upstream2, err := repo.CommitObject(upstream2Hash)
+	require.NoError(t, err)
+
+	// Overlay state: working tree already has %autochangelog body (the
+	// flip that tryMaterializeStaticChangelog applies before synthetic
+	// history is built).
+	const overlaySpec = "Name: package\n" +
+		"Version: 2.0\n" +
+		"Release: %autorelease\n" +
+		"Summary: Test\n" +
+		"License: MIT\n" +
+		"\n" +
+		"%description\n" +
+		"Test.\n" +
+		"\n" +
+		"%changelog\n" +
+		"%autochangelog\n"
+
+	overlayFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = overlayFile.Write([]byte(overlaySpec))
+	require.NoError(t, err)
+	require.NoError(t, overlayFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "proj-aaa",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply patch on v1.0",
+			},
+			UpstreamCommit: upstream1Hash.String(),
+		},
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "proj-bbb",
+				Author:      "Bob",
+				AuthorEmail: "bob@example.com",
+				Timestamp:   time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply patch on v2.0",
+			},
+			UpstreamCommit: upstream2Hash.String(),
+		},
 	}
 
-	for i, c := range logCommits[1:] {
-		_, ok := upstreamTrees[c.TreeHash]
-		assert.True(t, ok,
-			"historical commit at depth %d has tree %s not matching any upstream snapshot",
-			i+1, c.TreeHash.String())
+	err = sources.CommitInterleavedHistory(repo, changes, upstream1Hash.String())
+	require.NoError(t, err)
+
+	// Walk newest-first.
+	finalHead, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: finalHead.Hash()})
+	require.NoError(t, err)
+
+	var logCommits []*object.Commit
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		logCommits = append(logCommits, c)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Len(t, logCommits, 4)
+
+	// Position 1 is replayed upstream v2.0. Its tree must differ from the
+	// original (the spec blob was replaced) and its spec %changelog body
+	// must be '%autochangelog'.
+	replayed := logCommits[1]
+	require.Contains(t, replayed.Message, "upstream: v2.0",
+		"sanity: position 1 should be replayed upstream v2.0")
+
+	assert.NotEqual(t, upstream2.TreeHash, replayed.TreeHash,
+		"replayed upstream tree must differ from the original (spec body flipped)")
+
+	replayedSpecBody := readSpecFromTree(t, repo, replayed.TreeHash, "package.spec")
+	assert.Contains(t, replayedSpecBody, "%autochangelog",
+		"replayed upstream spec must have %%autochangelog in its %%changelog body")
+	assert.NotContains(t, replayedSpecBody, "replayed upstream static entry",
+		"replayed upstream spec must not retain the original static %%changelog body")
+
+	// Non-spec entries (sidecar files like 'sources', patches, etc.) must
+	// survive the tree rebuild byte-for-byte. Regressions in the
+	// tree-mutation path would silently drop them.
+	replayedSidecar := readSpecFromTree(t, repo, replayed.TreeHash, sidecarName)
+	assert.Equal(t, sidecarContent, replayedSidecar,
+		"replayed upstream tree must preserve non-spec sibling files byte-for-byte")
+
+	// Position 3 is the kept import-commit. Its tree must be untouched.
+	importCommit := logCommits[3]
+	require.Contains(t, importCommit.Message, "upstream: v1.0",
+		"sanity: position 3 should be the kept import-commit")
+
+	assert.Equal(t, upstream1.TreeHash, importCommit.TreeHash,
+		"kept import-commit tree must be unchanged (acts as the autochangelog-walk seed)")
+
+	importSpecBody := readSpecFromTree(t, repo, importCommit.TreeHash, "package.spec")
+	assert.Contains(t, importSpecBody, "import-commit static entry",
+		"kept import-commit spec must retain its original static %%changelog body")
+	assert.NotContains(t, importSpecBody, "%autochangelog",
+		"kept import-commit spec must NOT contain %%autochangelog")
+}
+
+// writeSpecAndCommit overwrites the named spec in memFS, stages all working
+// tree changes (so sibling files written into memFS also land in the commit),
+// and creates a commit with the given message and author timestamp.
+func writeSpecAndCommit(
+	t *testing.T,
+	worktree *gogit.Worktree,
+	memFS billy.Filesystem,
+	specName, content, message string,
+	when time.Time,
+) {
+	t.Helper()
+
+	f, err := memFS.Create(specName)
+	require.NoError(t, err)
+
+	_, err = f.Write([]byte(content))
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	_, err = worktree.Add(specName)
+	require.NoError(t, err)
+
+	// Pick up any sibling files (e.g., a 'sources' sidecar) that the test
+	// wrote into memFS before calling this helper.
+	err = worktree.AddWithOptions(&gogit.AddOptions{All: true})
+	require.NoError(t, err)
+
+	_, err = worktree.Commit(message, &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "up@fedora.org",
+			When:  when,
+		},
+	})
+	require.NoError(t, err)
+}
+
+// readSpecFromTree fetches the named spec blob from the given tree and
+// returns its contents as a string.
+func readSpecFromTree(t *testing.T, repo *gogit.Repository, treeHash plumbing.Hash, name string) string {
+	t.Helper()
+
+	tree, err := repo.TreeObject(treeHash)
+	require.NoError(t, err)
+
+	for i := range tree.Entries {
+		e := &tree.Entries[i]
+		if e.Name != name {
+			continue
+		}
+
+		blob, err := repo.BlobObject(e.Hash)
+		require.NoError(t, err)
+
+		reader, err := blob.Reader()
+		require.NoError(t, err)
+
+		defer reader.Close()
+
+		buf := make([]byte, blob.Size)
+		_, err = reader.Read(buf)
+		require.NoError(t, err)
+
+		return string(buf)
 	}
+
+	t.Fatalf("spec %q not found in tree %s", name, treeHash)
+
+	return ""
 }
