@@ -121,10 +121,19 @@ func FindFingerprintChanges(
 //
 // When importCommit is non-empty, only upstream commits from importCommit
 // onward are considered for interleaving.
+//
+// The bumps map, when non-nil, injects additional synth "bump" commits at
+// anchor points during replay. Each key is an upstream commit hash; its value
+// is the number of bump commits to inject right after that upstream commit is
+// replayed. Bump commits carry the parent's tree (no file changes) and a
+// [skip changelog] marker so rpmautospec counts them for %%autorelease but
+// excludes them from %%autochangelog. Anchors not found in the replayed
+// history are warned about and skipped.
 func CommitInterleavedHistory(
 	repo *gogit.Repository,
 	changes []FingerprintChange,
 	importCommit string,
+	bumps map[string]int,
 ) error {
 	// No changes means no synthetic commits to create, so skip the whole process.
 	if len(changes) == 0 {
@@ -152,7 +161,7 @@ func CommitInterleavedHistory(
 	// Build the full interleaved sequence of upstream and synthetic commits.
 	sequence := buildInterleavedSequence(upstreamCommits, changes)
 
-	return replayInterleavedHistory(repo, sequence, overlayTreeHash)
+	return replayInterleavedHistory(repo, sequence, overlayTreeHash, bumps)
 }
 
 // stageAndCaptureOverlayTree stages all working tree changes and creates a
@@ -275,6 +284,7 @@ func replayInterleavedHistory(
 	repo *gogit.Repository,
 	sequence []interleavedEntry,
 	overlayTreeHash plumbing.Hash,
+	bumps map[string]int,
 ) error {
 	syntheticCount := countSyntheticEntries(sequence)
 
@@ -282,6 +292,10 @@ func replayInterleavedHistory(
 	if err != nil {
 		return err
 	}
+
+	// Track which bump anchors have been consumed so we can warn about
+	// unmatched ones after replay.
+	consumedAnchors := make(map[string]bool, len(bumps))
 
 	var (
 		lastHash     plumbing.Hash
@@ -292,29 +306,52 @@ func replayInterleavedHistory(
 		if idx == 0 && entry.upstreamCommit != nil {
 			lastHash = entry.upstreamCommit.Hash
 
+			var bumpErr error
+
+			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors)
+			if bumpErr != nil {
+				return bumpErr
+			}
+
 			continue
 		}
 
 		if entry.upstreamCommit != nil {
-			hash, err := replayUpstreamCommit(repo, entry.upstreamCommit, lastHash, sidecarBlobHash)
-			if err != nil {
-				return err
+			hash, replayErr := replayUpstreamCommit(repo, entry.upstreamCommit, lastHash, sidecarBlobHash)
+			if replayErr != nil {
+				return replayErr
 			}
 
 			lastHash = hash
+
+			var bumpErr error
+
+			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors)
+			if bumpErr != nil {
+				return bumpErr
+			}
 
 			continue
 		}
 
 		syntheticIdx++
 
-		hash, err := createSyntheticCommit(repo, entry.syntheticChange, overlayTreeHash, lastHash,
+		hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, overlayTreeHash, lastHash,
 			syntheticIdx, syntheticCount)
-		if err != nil {
-			return err
+		if synthErr != nil {
+			return synthErr
 		}
 
 		lastHash = hash
+	}
+
+	// Warn about unmatched bump anchors.
+	for anchor, count := range bumps {
+		if count > 0 && !consumedAnchors[anchor] {
+			slog.Warn("Bump anchor not found in replayed history; skipping",
+				"anchor", anchor,
+				"count", count)
+		}
 	}
 
 	if err := updateHead(repo, lastHash); err != nil {
@@ -326,6 +363,31 @@ func replayInterleavedHistory(
 		"totalCommits", len(sequence))
 
 	return nil
+}
+
+// tryInjectBumps checks if the bumps map has an entry for commitHash. If so,
+// it injects the corresponding bump commits and marks the anchor as consumed.
+// Returns the new lastHash (unchanged if no bumps were injected).
+func tryInjectBumps(
+	repo *gogit.Repository,
+	lastHash plumbing.Hash,
+	commitHash string,
+	bumps map[string]int,
+	consumedAnchors map[string]bool,
+) (plumbing.Hash, error) {
+	count, ok := bumps[commitHash]
+	if !ok || count <= 0 {
+		return lastHash, nil
+	}
+
+	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	consumedAnchors[commitHash] = true
+
+	return bumpHash, nil
 }
 
 // replayUpstreamCommit recreates an upstream commit with a new parent and a
@@ -407,6 +469,61 @@ func countSyntheticEntries(sequence []interleavedEntry) int {
 	}
 
 	return count
+}
+
+// shortHashLen is the number of hex characters used when abbreviating a
+// commit hash for human-readable log/commit messages.
+const shortHashLen = 7
+
+// replayBumpCommits injects count synth "bump" commits right after the anchor
+// commit. Each commit shares the parent's tree (no file changes) and carries
+// a [skip changelog] marker so rpmautospec excludes them from %autochangelog
+// but still counts them for %autorelease.
+//
+// Returns the hash of the last bump commit (the new parent for whatever
+// comes next).
+func replayBumpCommits(
+	repo *gogit.Repository,
+	parentHash plumbing.Hash,
+	anchorHash string,
+	count int,
+) (plumbing.Hash, error) {
+	// Read the parent's tree to reuse for all bump commits.
+	parentCommit, err := repo.CommitObject(parentHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("reading parent commit for bump injection:\n%w", err)
+	}
+
+	shortAnchor := anchorHash
+	if len(shortAnchor) > shortHashLen {
+		shortAnchor = shortAnchor[:shortHashLen]
+	}
+
+	current := parentHash
+
+	for idx := 1; idx <= count; idx++ {
+		msg := fmt.Sprintf("bump %s (%d/%d)\n\n[skip changelog]", shortAnchor, idx, count)
+
+		author := object.Signature{
+			Name:  "azldev",
+			Email: "azldev@local",
+			When:  time.Unix(0, 0).UTC(),
+		}
+
+		hash, createErr := createCommitObject(repo, parentCommit.TreeHash, current, author, author, msg)
+		if createErr != nil {
+			return plumbing.ZeroHash, fmt.Errorf("creating bump commit %d/%d for anchor %s:\n%w",
+				idx, count, shortAnchor, createErr)
+		}
+
+		slog.Debug("Created bump commit",
+			"anchor", shortAnchor,
+			"bump", fmt.Sprintf("%d/%d", idx, count))
+
+		current = hash
+	}
+
+	return current, nil
 }
 
 // createCommitObject creates a new commit in the repository's object store with

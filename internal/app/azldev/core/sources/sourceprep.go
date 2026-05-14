@@ -478,7 +478,16 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return fmt.Errorf("failed to remove submodule entries:\n%w", err)
 	}
 
-	if err := CommitInterleavedHistory(sourcesRepo, changes, importCommit); err != nil {
+	// Read the current lock's Bumps map for synth-history injection.
+	// Bumps entries inject extra synth commits at anchor points to bridge
+	// the release gap during static-to-autorelease migration.
+	var bumps map[string]int
+
+	if lock, lockErr := p.lockReader.Get(componentName); lockErr == nil {
+		bumps = lock.Bumps
+	}
+
+	if err := CommitInterleavedHistory(sourcesRepo, changes, importCommit, bumps); err != nil {
 		return fmt.Errorf("failed to commit synthetic history:\n%w", err)
 	}
 
