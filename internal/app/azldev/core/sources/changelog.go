@@ -196,7 +196,7 @@ func pickSidecarBody(
 
 	importBody, err := extractChangelogBodyFromImportCommit(sourcesDirPath, importCommit, specBasename)
 	if err != nil {
-		slog.Debug("Falling back to working-dir spec body for sidecar; cannot read import-commit spec",
+		slog.Warn("Falling back to working-dir spec body for sidecar; cannot read import-commit spec",
 			"importCommit", importCommit, "err", err)
 
 		return workingBody, "working-dir"
