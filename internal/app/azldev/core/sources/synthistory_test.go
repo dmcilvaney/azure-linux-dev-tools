@@ -83,7 +83,7 @@ func TestCommitInterleavedHistory_AllOnTop(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify the commit log: upstream + 2 synthetic = 3 commits.
@@ -200,7 +200,7 @@ func TestCommitInterleavedHistory_Interleaved(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String())
+	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String(), nil, true, true)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -281,7 +281,7 @@ func TestCommitInterleavedHistory_SingleCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify working tree changes are in the single synthetic commit.
@@ -360,7 +360,7 @@ func TestCommitInterleavedHistory_OrphanUpstreamCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -449,7 +449,7 @@ func TestCommitInterleavedHistory_LocalComponent(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify: initial commit + 2 synthetic = 3 commits.
@@ -626,7 +626,7 @@ func TestCommitInterleavedHistory_MergeCommitInUpstream(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, commitA.String())
+	err = sources.CommitInterleavedHistory(repo, changes, commitA.String(), nil, true, true)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -791,5 +791,480 @@ func TestBuildDirtyChange(t *testing.T) {
 			assert.Equal(t, test.wantUpstream, result.UpstreamCommit)
 			assert.NotZero(t, result.Timestamp)
 		})
+	}
+}
+
+func TestCommitInterleavedHistory_BumpInjection(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	file, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file.Write([]byte("Name: package\nVersion: 1.0\n"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = specFile.Write([]byte("Name: package\nVersion: 1.0\n# overlays\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	upstreamHash := upstream1.String()
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "aaa111",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Config change",
+			},
+			UpstreamCommit: upstreamHash,
+		},
+	}
+
+	bumps := map[string]int{upstreamHash: 3}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps, true, true)
+	require.NoError(t, err)
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	var logCommits []*object.Commit
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		logCommits = append(logCommits, c)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	// upstream(1) + bumps(3) + synthetic(1) = 5
+	assert.Len(t, logCommits, 5, "upstream(1) + bumps(3) + synthetic(1)")
+
+	shortAnchor := upstreamHash[:7]
+
+	for _, c := range logCommits[1:4] {
+		assert.Contains(t, c.Message, sources.SkipChangelogMarker,
+			"bump commit must contain skip changelog marker")
+		assert.Contains(t, c.Message, shortAnchor,
+			"bump commit must reference anchor short hash")
+	}
+}
+
+func TestCommitInterleavedHistory_BumpUnmatchedAnchorWarns(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	file, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file.Write([]byte("Name: package\nVersion: 1.0\n"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = specFile.Write([]byte("Name: package\nVersion: 1.0\n# overlay\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "bbb222",
+				Author:      "Bob",
+				AuthorEmail: "bob@example.com",
+				Timestamp:   time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Change",
+			},
+			UpstreamCommit: upstream1.String(),
+		},
+	}
+
+	bumps := map[string]int{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 10}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps, true, true)
+	require.NoError(t, err, "unmatched anchors should warn, not error")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	count := 0
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		count++
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, count, "upstream(1) + synthetic(1), no bump commits")
+}
+
+func TestCommitInterleavedHistory_WorktreeCleanAfterContractRewrite(t *testing.T) {
+	// Regression test: when Contract.Materialize rewrites the spec (e.g.,
+	// flipping static Release with %autorelease), the index must be reset to
+	// match the new HEAD. Otherwise rpmautospec sees staged diffs and emits
+	// a spurious "Uncommitted changes" changelog entry.
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create an upstream commit with a STATIC Release tag that Contract
+	// will be rewritten to %autorelease during replay.
+	specContent := "Name: test-pkg\nVersion: 1.0\nRelease: 1%{?dist}\nSummary: T\nLicense: MIT\n\n%description\nTest.\n"
+
+	file, err := memFS.Create("test-pkg.spec")
+	require.NoError(t, err)
+	_, err = file.Write([]byte(specContent))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("test-pkg.spec")
+	require.NoError(t, err)
+
+	upstreamHash, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	// Simulate overlay: add a comment to the spec (modifies working tree).
+	overlayFile, err := memFS.Create("test-pkg.spec")
+	require.NoError(t, err)
+	_, err = overlayFile.Write([]byte(specContent + "# overlay applied\n"))
+	require.NoError(t, err)
+	require.NoError(t, overlayFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "abc123",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2025, 1, 10, 10, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply overlay",
+			},
+			UpstreamCommit: upstreamHash.String(),
+		},
+	}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
+	require.NoError(t, err)
+
+	// The working tree and index MUST be clean after replay. A stale index
+	// causes rpmautospec to emit "Uncommitted changes".
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(),
+		"worktree must be clean after CommitInterleavedHistory; dirty files: %v", status)
+}
+
+// TestCommitInterleavedHistory_SeedHasMaterializedTree verifies that the seed
+// (oldest commit in the rebuilt walk, == importCommit) has the contract-
+// satisfying tree (%autochangelog body, %autorelease tag), NOT the original
+// upstream tree.
+//
+// rpmautospec's per-commit walk flags a commit as "changelog changed" when its
+// %changelog body differs from its parent's. If the seed keeps the original
+// static body, the FIRST synth commit on top of it shows "changelog changed:
+// True" — rpmautospec treats it as a manual edit and drops its entry. By
+// materializing the seed too, the static→%autochangelog boundary moves below
+// the seed (to the upstream's natural parent), and every synth commit emits
+// an entry.
+func TestCommitInterleavedHistory_SeedHasMaterializedTree(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Upstream spec uses static Release and a static %changelog.
+	specContent := `Name: package
+Version: 1.0
+Release: 5%{?dist}
+Summary: t
+License: MIT
+
+%description
+Test.
+
+%changelog
+* Mon Jan 01 2024 Author <a@example.com> - 1.0-5
+- Existing static entry.
+`
+
+	file, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+	_, err = file.Write([]byte(specContent))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstreamHash, err := worktree.Commit("upstream: import", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name: "Upstream", Email: "u@u", When: time.Unix(0, 0).UTC(),
+		},
+	})
+	require.NoError(t, err)
+
+	// Simulate overlay: write the same spec with %autochangelog body and
+	// %autorelease Release to the working tree (what Contract would produce).
+	// The synth commit's tree comes from the overlay tree.
+	overlayContent := `Name: package
+Version: 1.0
+Release: %autorelease
+Summary: t
+License: MIT
+
+%description
+Test.
+
+%changelog
+%autochangelog
+`
+
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+	_, err = specFile.Write([]byte(overlayContent))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	// Single fingerprint change tied to the upstream import-commit.
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash: "synthA", Author: "Dev", AuthorEmail: "d@d",
+				Timestamp: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:   "first synth change",
+			},
+			UpstreamCommit: upstreamHash.String(),
+		},
+	}
+
+	err = sources.CommitInterleavedHistory(repo, changes, upstreamHash.String(), nil, true, true)
+	require.NoError(t, err)
+
+	// Walk HEAD backwards. We expect: synth + seed.
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	iter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	var commits []*object.Commit
+
+	require.NoError(t, iter.ForEach(func(c *object.Commit) error {
+		commits = append(commits, c)
+		return nil
+	}))
+
+	require.Len(t, commits, 2, "expected synth + seed")
+
+	// Every commit in the rebuilt history must have the contract-satisfying
+	// %changelog body so rpmautospec doesn't see a "changelog changed"
+	// boundary inside our synth range.
+	for i, c := range commits {
+		body := readSpecFromTree(t, repo, c.TreeHash)
+		assert.Contains(t, body, "%autochangelog",
+			"commit[%d] %s must have %%autochangelog body", i, c.Hash)
+		assert.NotContains(t, body, "Existing static entry",
+			"commit[%d] %s must NOT retain static changelog entries", i, c.Hash)
+	}
+}
+
+func TestCommitInterleavedHistory_PreservesUpstreamVersionAtSynthCommits(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Upstream commit 1: version 1.0 (the import-commit / seed).
+	file1, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+	_, err = file1.Write([]byte("Name: package\nVersion: 1.0\nRelease: 1%{?dist}\n"))
+	require.NoError(t, err)
+	require.NoError(t, file1.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1, err := worktree.Commit("upstream: v1.0", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name: "Upstream", Email: "u@u",
+			When: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	// Upstream commit 2: version 2.0 (upstream rebased mid-history).
+	file2, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+	_, err = file2.Write([]byte("Name: package\nVersion: 2.0\nRelease: 1%{?dist}\n"))
+	require.NoError(t, err)
+	require.NoError(t, file2.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream2, err := worktree.Commit("upstream: v2.0", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name: "Upstream", Email: "u@u",
+			When: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	// Overlay state: version 3.0 (a version bump landed in the latest
+	// project commit). Only the LAST synth commit should reflect this.
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+	_, err = specFile.Write([]byte("Name: package\nVersion: 3.0\nRelease: 1%{?dist}\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash: "proj-aaa", Author: "Alice", AuthorEmail: "a@a",
+				Timestamp: time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:   "Fix landed while on v1.0",
+			},
+			UpstreamCommit: upstream1.String(),
+		},
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash: "proj-bbb", Author: "Bob", AuthorEmail: "b@b",
+				Timestamp: time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:   "Fix landed while on v2.0",
+			},
+			UpstreamCommit: upstream2.String(),
+		},
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash: "proj-ccc", Author: "Carol", AuthorEmail: "c@c",
+				Timestamp: time.Date(2024, 8, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:   "Bump to v3.0",
+			},
+			UpstreamCommit: upstream2.String(),
+		},
+	}
+
+	// Disable Release/changelog flips: this test is about tree inheritance,
+	// not Contract rewrites. Keeping them off makes the assertions about
+	// spec content (Version line) trivially observable.
+	err = sources.CommitInterleavedHistory(
+		repo, changes, upstream1.String(), nil, false, false)
+	require.NoError(t, err)
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	iter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	var commits []*object.Commit
+
+	require.NoError(t, iter.ForEach(func(c *object.Commit) error {
+		commits = append(commits, c)
+
+		return nil
+	}))
+
+	// Expected order (newest first):
+	//   [0] "Bump to v3.0"             synth, last → Version: 3.0 (overlay)
+	//   [1] "Fix landed while on v2.0" synth, after U2 → Version: 2.0 (from U2)
+	//   [2] "upstream: v2.0"           replayed upstream → Version: 2.0
+	//   [3] "Fix landed while on v1.0" synth, between U1+U2 → Version: 1.0 (U1)
+	//   [4] "upstream: v1.0"           seed → Version: 1.0
+	require.Len(t, commits, 5, "should have 2 upstream + 3 synthetic")
+
+	type want struct {
+		messageSubstr string
+		version       string
+	}
+
+	expected := []want{
+		{"Bump to v3.0", "Version: 3.0"},             // last synth → overlay
+		{"Fix landed while on v2.0", "Version: 2.0"}, // synth inherits U2
+		{"upstream: v2.0", "Version: 2.0"},           // upstream
+		{"Fix landed while on v1.0", "Version: 1.0"}, // synth inherits U1
+		{"upstream: v1.0", "Version: 1.0"},           // seed
+	}
+
+	for idx, want := range expected {
+		assert.Contains(t, commits[idx].Message, want.messageSubstr,
+			"commit[%d] message mismatch", idx)
+
+		body := readSpecFromTree(t, repo, commits[idx].TreeHash)
+		assert.Contains(t, body, want.version,
+			"commit[%d] (%s): spec must have %s; got: %s",
+			idx, want.messageSubstr, want.version, body)
 	}
 }
