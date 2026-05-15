@@ -161,9 +161,9 @@ const (
 	ReleaseCalculationAutorelease ReleaseCalculation = "autorelease"
 
 	// ReleaseCalculationStatic explicitly declares that the spec uses a static
-	// release tag. azldev parses and bumps the release value during rendering.
-	// Use this for specs with conditional Release tags where auto-detection
-	// picks the wrong branch but the static release logic still works correctly.
+	// release tag. azldev validates the static value and flips it to %autorelease
+	// during rendering. Use this for specs with conditional Release tags where
+	// auto-detection picks the wrong branch.
 	ReleaseCalculationStatic ReleaseCalculation = "static"
 
 	// ReleaseCalculationManual skips all automatic Release tag manipulation. Use this for
@@ -175,6 +175,35 @@ const (
 type ReleaseConfig struct {
 	// Calculation controls how the Release tag is managed during rendering.
 	Calculation ReleaseCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto autorelease static manual" jsonschema:"enum=auto,enum=autorelease,enum=static,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
+}
+
+// ChangelogCalculation controls how the %changelog block is materialized during rendering.
+type ChangelogCalculation string
+
+const (
+	// ChangelogCalculationAuto is the default. azldev auto-detects whether the spec
+	// uses %autochangelog or a static %changelog block, and handles each accordingly.
+	ChangelogCalculationAuto ChangelogCalculation = "auto"
+
+	// ChangelogCalculationAutochangelog explicitly declares that the spec uses
+	// %autochangelog. azldev defers to rpmautospec to materialize entries from git
+	// history.
+	ChangelogCalculationAutochangelog ChangelogCalculation = "autochangelog"
+
+	// ChangelogCalculationStatic explicitly declares that the spec ships a static
+	// %changelog block. azldev materializes new entries from synthetic dist-git
+	// history and prepends them to the existing block, preserving pre-import entries.
+	ChangelogCalculationStatic ChangelogCalculation = "static"
+
+	// ChangelogCalculationManual skips all automatic %changelog manipulation. Use
+	// for components that manage their own changelog (e.g. kernel).
+	ChangelogCalculationManual ChangelogCalculation = "manual"
+)
+
+// ChangelogConfig holds %changelog-related configuration for a component.
+type ChangelogConfig struct {
+	// Calculation controls how the %changelog block is materialized during rendering.
+	Calculation ChangelogCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto autochangelog static manual" jsonschema:"enum=auto,enum=autochangelog,enum=static,enum=manual,default=auto,title=Changelog calculation,description=Controls how the %changelog block is materialized during rendering. Empty or omitted means auto."`
 }
 
 // FreshnessStatus indicates whether a component's current config matches
@@ -269,6 +298,9 @@ type ComponentConfig struct {
 
 	// Release configuration for this component.
 	Release ReleaseConfig `toml:"release,omitempty" json:"release,omitempty" table:"-" jsonschema:"title=Release configuration,description=Configuration for how the Release tag is managed during rendering."`
+
+	// Changelog configuration for this component.
+	Changelog ChangelogConfig `toml:"changelog,omitempty" json:"changelog,omitempty" table:"-" jsonschema:"title=Changelog configuration,description=Configuration for how the %changelog block is materialized during rendering."`
 
 	// Overlays to apply to sources after they've been acquired. May mutate the spec as well as sources.
 	Overlays []ComponentOverlay `toml:"overlays,omitempty" json:"overlays,omitempty" table:"-" jsonschema:"title=Overlays,description=Overlays to apply to this component's spec and/or sources"`
@@ -377,6 +409,7 @@ func (c *ComponentConfig) WithAbsolutePaths(referenceDir string) *ComponentConfi
 		RenderedSpecDir:  c.RenderedSpecDir,
 		Locked:           deep.MustCopy(c.Locked),
 		Release:          c.Release,
+		Changelog:        c.Changelog,
 		Spec:             deep.MustCopy(c.Spec),
 		Build:            deep.MustCopy(c.Build),
 		Render:           c.Render,

@@ -47,7 +47,7 @@ func mockComponent(
 	return comp
 }
 
-func TestTryBumpStaticRelease_ManualSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_ManualSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -59,11 +59,11 @@ func TestTryBumpStaticRelease_ManualSkips(t *testing.T) {
 	})
 
 	// No spec file needed — should skip before reading anything.
-	err := preparer.tryBumpStaticRelease(comp, testSourcesDir, 3)
+	err := preparer.tryApplyReleaseCalculation(comp, testSourcesDir)
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_AutoreleaseSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoreleaseSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -76,11 +76,11 @@ func TestTryBumpStaticRelease_AutoreleaseSkips(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_StaticBumps(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoFlipsStatic(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -93,17 +93,17 @@ func TestTryBumpStaticRelease_StaticBumps(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	// Verify the spec was updated.
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{?dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_StaticBumpsNonConditionalDist(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoFlipsStaticNoDist(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -116,16 +116,16 @@ func TestTryBumpStaticRelease_StaticBumpsNonConditionalDist(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_NonStandardErrorsWithoutManual(t *testing.T) {
+func TestTryApplyReleaseCalculation_NonStandardErrors(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -138,13 +138,13 @@ func TestTryBumpStaticRelease_NonStandardErrorsWithoutManual(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "kernel"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "kernel"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot be auto-bumped")
+	assert.Contains(t, err.Error(), "cannot be")
 	assert.Contains(t, err.Error(), "release.calculation")
 }
 
-func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
+func TestTryApplyReleaseCalculation_ManualAcceptsNonStandard(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -157,28 +157,28 @@ func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "kernel"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "kernel"))
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_ExplicitAutoreleaseSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitAutoreleaseValidates(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
 
-	// Spec has a static release, but config says autorelease — should skip.
+	writeTestSpec(t, memFS, "gvisor", "%autorelease")
+
 	comp := mockComponent(ctrl, "gvisor", &projectconfig.ComponentConfig{
 		Release: projectconfig.ReleaseConfig{
 			Calculation: projectconfig.ReleaseCalculationAutorelease,
 		},
 	})
 
-	// No spec file needed — should skip before reading anything.
-	err := preparer.tryBumpStaticRelease(comp, testSourcesDir, 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "gvisor"))
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_ExplicitStaticBumps(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitStaticFlips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -191,17 +191,17 @@ func TestTryBumpStaticRelease_ExplicitStaticBumps(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	// Verify the spec was updated.
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{?dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -215,7 +215,7 @@ func TestTryBumpStaticRelease_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `release.calculation = "autorelease"`)
 }

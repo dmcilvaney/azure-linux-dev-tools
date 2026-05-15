@@ -436,12 +436,13 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return nil
 	}
 
-	// Adjust the Release tag before staging changes. See [tryBumpStaticRelease]
-	// for the handling of %autorelease, static integers, and non-standard values.
-	if err := p.tryBumpStaticRelease(component, sourcesDirPath, len(changes)); err != nil {
-		return fmt.Errorf("failed to apply release bump:\n%w", err)
+	// Adjust the Release tag before staging changes.
+	if err := p.tryApplyReleaseCalculation(component, sourcesDirPath); err != nil {
+		return fmt.Errorf("failed to apply release calculation:\n%w", err)
 	}
 
+	// Initialize .git BEFORE sidecar materialization — pickSidecarBody needs
+	// PlainOpen to succeed when reading the import-commit's spec body.
 	gitDirPath := filepath.Join(sourcesDirPath, ".git")
 
 	gitDirExists, err := fileutils.Exists(p.fs, gitDirPath)
