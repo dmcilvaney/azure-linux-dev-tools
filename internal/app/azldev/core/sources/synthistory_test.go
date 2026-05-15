@@ -944,12 +944,12 @@ func TestCommitInterleavedHistory_SyntheticCommitsCarryOverlayTree(t *testing.T)
 	assert.Contains(t, logCommits[3].Message, "upstream: v1.0",
 		"sanity: position 3 should be the kept import-commit")
 
-	// Core invariant: upstream-derived commits preserve their original tree;
-	// every synthetic commit (including intermediates) carries the overlay
-	// tree so rpmautospec sees the autochangelog flip in every synthetic
-	// commit and materializes a changelog entry for each one.
-	assert.Equal(t, upstream2.TreeHash, logCommits[1].TreeHash,
-		"replayed upstream v2.0 must preserve its original tree byte-for-byte")
+	// Core invariant: the kept import-commit preserves its original tree;
+	// replayed upstream commits have their spec flipped (%autochangelog +
+	// %autorelease) so rpmautospec's per-commit body checks see the correct
+	// macros; every synthetic commit carries the overlay tree.
+	assert.NotEqual(t, upstream2.TreeHash, logCommits[1].TreeHash,
+		"replayed upstream v2.0 must have its spec flipped (tree changes)")
 	assert.Equal(t, headCommit.TreeHash, logCommits[2].TreeHash,
 		"intermediate synthetic commit must carry the same overlay tree as HEAD")
 	assert.NotEqual(t, upstream1.TreeHash, logCommits[2].TreeHash,

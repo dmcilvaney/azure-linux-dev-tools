@@ -103,11 +103,11 @@ func flipSpecBlob(repo *gogit.Repository, specEntry *object.TreeEntry) (plumbing
 	}
 
 	if err := ReplaceChangelogBodyWithAutochangelog(specFile); err != nil {
-		if errors.Is(err, spec.ErrSectionNotFound) {
-			return specEntry.Hash, false, nil
+		if !errors.Is(err, spec.ErrSectionNotFound) {
+			return plumbing.ZeroHash, false, fmt.Errorf("flip %%changelog in %#q:\n%w", specEntry.Name, err)
 		}
 
-		return plumbing.ZeroHash, false, fmt.Errorf("flip %%changelog in %#q:\n%w", specEntry.Name, err)
+		// No %changelog section — continue to Release flip regardless.
 	}
 
 	// Also flip the Release tag to %autorelease so rpmautospec's per-commit
@@ -204,10 +204,10 @@ func buildRewrittenEntries(
 		})
 	}
 
-	// go-git's tree encoder requires entries sorted by name.
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Name < out[j].Name
-	})
+	// go-git's tree encoder requires entries in git's tree-sort order
+	// (directories sort as if their name ends with '/'). Use the built-in
+	// TreeEntrySorter to match git's rules exactly.
+	sort.Sort(object.TreeEntrySorter(out))
 
 	return out
 }
