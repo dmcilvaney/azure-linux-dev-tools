@@ -60,7 +60,7 @@ type ComponentLock struct {
 	// changes the spec Version, rpmautospec's %autorelease walk-back stops
 	// at that boundary, ignoring the earlier bump commits.
 	//
-	// Written by 'azldev component migrate-release'. May be hand-edited.
+	// Written by the standalone migrate-release tool. May be hand-edited.
 	// Non-empty entries with anchors not present in replayed history are
 	// skipped with a warning at render time. Almost always empty.
 	Bumps map[string]int `toml:"bumps,omitempty"`
