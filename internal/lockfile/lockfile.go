@@ -43,6 +43,26 @@ type ComponentLock struct {
 	// Empty for local components.
 	UpstreamCommit string `toml:"upstream-commit,omitempty"`
 
+	// Bumps is a per-anchor release-offset map for one-time migration from
+	// static Release values to %autorelease. Each key is an upstream commit
+	// hash; each value is the number of synth "bump" commits the renderer
+	// injects after that anchor during synthetic-history replay.
+	//
+	// Excluded from the input fingerprint to avoid double-counting with
+	// the fingerprint walker. ManualBump (which IS fingerprinted) handles
+	// ongoing --bump operations independently. If a rebuild is also needed
+	// when writing Bumps, increment ManualBump in the same commit.
+	//
+	// Version-change handling is automatic: bump commits are placed after
+	// their anchor in the replayed history. When a later upstream commit
+	// changes the spec Version, rpmautospec's %autorelease walk-back stops
+	// at that boundary, ignoring the earlier bump commits.
+	//
+	// Written by the standalone migrate-release tool. May be hand-edited.
+	// Non-empty entries with anchors not present in replayed history are
+	// skipped with a warning at render time. Almost always empty.
+	Bumps map[string]int `toml:"bumps,omitempty"`
+
 	// ManualBump is an extra rebuild counter for mass-rebuild scenarios.
 	// Almost always 0. Incrementing this changes the component's fingerprint,
 	// triggering a new release without any other input change.

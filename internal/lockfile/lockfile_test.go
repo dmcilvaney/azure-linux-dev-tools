@@ -836,3 +836,62 @@ func TestStoreValidateConsistency(t *testing.T) {
 		assert.Contains(t, orphans, "removed")
 	})
 }
+
+// ----------------------------------------------------------------------------
+// Bumps map tests (PR 3 — lockfile schema for migration offsets).
+// ----------------------------------------------------------------------------
+
+func TestNewHasNilBumps(t *testing.T) {
+	lock := lockfile.New()
+	assert.Nil(t, lock.Bumps)
+	assert.Zero(t, lock.ManualBump)
+}
+
+func TestBumpsRoundTrip(t *testing.T) {
+	memFS := afero.NewMemMapFs()
+	lockPath := mustLockPath(t, "curl")
+
+	original := lockfile.New()
+	original.UpstreamCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	original.Bumps = map[string]int{
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 2,
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": 1,
+	}
+
+	require.NoError(t, original.Save(memFS, lockPath))
+
+	loaded, err := lockfile.Load(memFS, lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, original.Bumps, loaded.Bumps)
+}
+
+func TestBumpsOmittedWhenEmpty(t *testing.T) {
+	memFS := afero.NewMemMapFs()
+	lockPath := mustLockPath(t, "curl")
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = testCommitHash
+
+	require.NoError(t, lock.Save(memFS, lockPath))
+
+	data, err := fileutils.ReadFile(memFS, lockPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "bumps", "empty Bumps map must be omitted from TOML")
+}
+
+func TestBumpsAndManualBumpIndependent(t *testing.T) {
+	memFS := afero.NewMemMapFs()
+	lockPath := mustLockPath(t, "curl")
+
+	lock := lockfile.New()
+	lock.UpstreamCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	lock.Bumps = map[string]int{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 46}
+	lock.ManualBump = 2
+
+	require.NoError(t, lock.Save(memFS, lockPath))
+
+	loaded, err := lockfile.Load(memFS, lockPath)
+	require.NoError(t, err)
+	assert.Equal(t, 46, loaded.Bumps["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"])
+	assert.Equal(t, 2, loaded.ManualBump)
+}
