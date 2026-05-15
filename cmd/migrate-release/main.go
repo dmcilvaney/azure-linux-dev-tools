@@ -168,10 +168,10 @@ func main() {
 
 			// Add a comment explaining the bump entry.
 			comment := fmt.Sprintf(
-				"# Migration: static Release %d -> %%autorelease (base %d) at upstream commit %s. Gap = %d.\n",
+				"# Migration: static Release %d -> %%autorelease (base %d) at upstream commit %s. Gap = %d.",
 				oldRelease, newRelease, lock.UpstreamCommit[:12], gap)
 
-			if commentErr := insertCommentAboveBumps(lockPath, comment); commentErr != nil {
+			if commentErr := insertCommentAfterBumps(lockPath, comment); commentErr != nil {
 				log.Printf("WARN  %s: could not add comment to lock: %v", name, commentErr)
 			}
 		}
@@ -259,9 +259,9 @@ func readNewReleaseNumber(specPath string) (int, error) {
 	return 0, fmt.Errorf("no release_number found in rpmautospec header")
 }
 
-// insertCommentAboveBumps reads a lock file, finds the [bumps] section header,
-// and inserts a comment line above it explaining why the entry exists.
-func insertCommentAboveBumps(lockPath, comment string) error {
+// insertCommentAfterBumps reads a lock file, finds the [bumps] section header,
+// and inserts a comment line after it explaining why the entry exists.
+func insertCommentAfterBumps(lockPath, comment string) error {
 	data, err := os.ReadFile(lockPath)
 	if err != nil {
 		return err
@@ -272,10 +272,10 @@ func insertCommentAboveBumps(lockPath, comment string) error {
 	var result []string
 
 	for _, line := range lines {
+		result = append(result, line)
+
 		if strings.TrimSpace(line) == "[bumps]" {
-			result = append(result, comment+"[bumps]")
-		} else {
-			result = append(result, line)
+			result = append(result, comment)
 		}
 	}
 
