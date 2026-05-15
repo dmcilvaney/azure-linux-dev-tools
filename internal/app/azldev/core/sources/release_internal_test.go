@@ -161,20 +161,20 @@ func TestTryApplyReleaseCalculation_ManualAcceptsNonStandard(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestTryApplyReleaseCalculation_ExplicitAutoreleaseValidates(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitAutoreleaseSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
 
-	writeTestSpec(t, memFS, "gvisor", "%autorelease")
-
+	// No spec file needed — autorelease mode trusts the config declaration
+	// and skips without reading the spec (supports macro indirection).
 	comp := mockComponent(ctrl, "gvisor", &projectconfig.ComponentConfig{
 		Release: projectconfig.ReleaseConfig{
 			Calculation: projectconfig.ReleaseCalculationAutorelease,
 		},
 	})
 
-	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "gvisor"))
+	err := preparer.tryApplyReleaseCalculation(comp, testSourcesDir)
 	require.NoError(t, err)
 }
 

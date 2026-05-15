@@ -115,7 +115,13 @@ func (p *sourcePreparerImpl) tryApplyReleaseCalculation(
 		return nil
 
 	case projectconfig.ReleaseCalculationAutorelease:
-		return p.validateAutorelease(component, sourcesDirPath)
+		// Trust the config declaration — the spec uses %autorelease (possibly
+		// via macro indirection like %{samba_release}). No validation or
+		// modification needed.
+		slog.Debug("Component uses autorelease calculation; skipping",
+			"component", component.GetName())
+
+		return nil
 
 	case projectconfig.ReleaseCalculationStatic:
 		return p.flipStaticToAutorelease(component, sourcesDirPath, true)
@@ -127,34 +133,6 @@ func (p *sourcePreparerImpl) tryApplyReleaseCalculation(
 		return fmt.Errorf("component %#q has unknown release calculation mode %#q",
 			component.GetName(), calc)
 	}
-}
-
-// validateAutorelease checks that the spec already uses %autorelease. Used by
-// the "autorelease" mode to catch misconfigurations.
-func (p *sourcePreparerImpl) validateAutorelease(
-	component components.Component,
-	sourcesDirPath string,
-) error {
-	specPath, err := p.resolveSpecPath(component, sourcesDirPath)
-	if err != nil {
-		return err
-	}
-
-	releaseValue, err := GetReleaseTagValue(p.fs, specPath)
-	if err != nil {
-		return fmt.Errorf("failed to read Release tag for component %#q:\n%w",
-			component.GetName(), err)
-	}
-
-	if !ReleaseUsesAutorelease(releaseValue) {
-		return fmt.Errorf(
-			"component %#q has 'release.calculation = \"autorelease\"' but its Release tag "+
-				"is %#q, not %%autorelease; either fix the spec or set "+
-				"'release.calculation = \"auto\"' to flip it automatically",
-			component.GetName(), releaseValue)
-	}
-
-	return nil
 }
 
 // flipStaticToAutorelease reads the spec's Release tag and flips it to
