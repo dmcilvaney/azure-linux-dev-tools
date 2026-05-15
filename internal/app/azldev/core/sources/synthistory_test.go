@@ -1349,13 +1349,15 @@ func TestCommitInterleavedHistory_BumpInjection(t *testing.T) {
 			"bump commit must say 'bump'")
 	}
 
-	// Bump commits should have the same tree as the upstream commit (no file changes).
-	upstreamCommitObj, err := repo.CommitObject(upstream1)
+	// Bump commits should carry the overlay tree (flipped spec), not the
+	// upstream commit's original tree. The overlay tree is the same as the
+	// final synthetic commit's tree (HEAD).
+	headCommit, err := repo.CommitObject(head.Hash())
 	require.NoError(t, err)
 
 	for _, c := range logCommits[1:4] {
-		assert.Equal(t, upstreamCommitObj.TreeHash, c.TreeHash,
-			"bump commits must share the upstream commit's tree")
+		assert.Equal(t, headCommit.TreeHash, c.TreeHash,
+			"bump commits must carry the overlay tree (flipped spec)")
 	}
 }
 

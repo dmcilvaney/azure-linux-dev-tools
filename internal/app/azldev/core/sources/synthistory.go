@@ -308,7 +308,7 @@ func replayInterleavedHistory(
 
 			var bumpErr error
 
-			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors)
+			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors, overlayTreeHash)
 			if bumpErr != nil {
 				return bumpErr
 			}
@@ -326,7 +326,7 @@ func replayInterleavedHistory(
 
 			var bumpErr error
 
-			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors)
+			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(), bumps, consumedAnchors, overlayTreeHash)
 			if bumpErr != nil {
 				return bumpErr
 			}
@@ -374,13 +374,14 @@ func tryInjectBumps(
 	commitHash string,
 	bumps map[string]int,
 	consumedAnchors map[string]bool,
+	overlayTreeHash plumbing.Hash,
 ) (plumbing.Hash, error) {
 	count, ok := bumps[commitHash]
 	if !ok || count <= 0 {
 		return lastHash, nil
 	}
 
-	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count)
+	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count, overlayTreeHash)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -476,9 +477,11 @@ func countSyntheticEntries(sequence []interleavedEntry) int {
 const shortHashLen = 7
 
 // replayBumpCommits injects count synth "bump" commits right after the anchor
-// commit. Each commit shares the parent's tree (no file changes) and carries
-// a [skip changelog] marker so rpmautospec excludes them from %autochangelog
-// but still counts them for %autorelease.
+// commit. Each commit carries the overlay tree (which contains the flipped
+// spec with %%autorelease and %%autochangelog) so rpmautospec's per-commit
+// body checks see the correct macros. The [skip changelog] marker excludes
+// bump commits from %%autochangelog but they are still counted for
+// %%autorelease.
 //
 // Returns the hash of the last bump commit (the new parent for whatever
 // comes next).
@@ -487,13 +490,8 @@ func replayBumpCommits(
 	parentHash plumbing.Hash,
 	anchorHash string,
 	count int,
+	overlayTreeHash plumbing.Hash,
 ) (plumbing.Hash, error) {
-	// Read the parent's tree to reuse for all bump commits.
-	parentCommit, err := repo.CommitObject(parentHash)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("reading parent commit for bump injection:\n%w", err)
-	}
-
 	shortAnchor := anchorHash
 	if len(shortAnchor) > shortHashLen {
 		shortAnchor = shortAnchor[:shortHashLen]
@@ -510,7 +508,7 @@ func replayBumpCommits(
 			When:  time.Unix(0, 0).UTC(),
 		}
 
-		hash, createErr := createCommitObject(repo, parentCommit.TreeHash, current, author, author, msg)
+		hash, createErr := createCommitObject(repo, overlayTreeHash, current, author, author, msg)
 		if createErr != nil {
 			return plumbing.ZeroHash, fmt.Errorf("creating bump commit %d/%d for anchor %s:\n%w",
 				idx, count, shortAnchor, createErr)
