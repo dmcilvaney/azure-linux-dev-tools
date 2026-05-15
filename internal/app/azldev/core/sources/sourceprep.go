@@ -477,7 +477,39 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return fmt.Errorf("failed to materialize %%changelog:\n%w", err)
 	}
 
-	if err := CommitInterleavedHistory(sourcesRepo, changes, importCommit); err != nil {
+	// Read the current lock's Bumps map for synth-history injection.
+	var bumps map[string]int
+
+	if lock, lockErr := p.lockReader.Get(componentName); lockErr == nil {
+		bumps = lock.Bumps
+	}
+
+	// Only replace Release / %changelog macros when the component is configured
+	// to use rpmautospec for that field AND the spec doesn't already declare
+	// the macro itself.
+	//
+	//   - manual:        do nothing — the spec uses its own scheme.
+	//   - autorelease /
+	//     autochangelog: do nothing — escape hatch declaring the spec already
+	//                    uses rpmautospec macros (possibly with custom args
+	//                    like %autorelease -b 10 -p, or buried inside other
+	//                    body lines, or behind macro indirection). Trust the
+	//                    spec, do not rewrite.
+	//   - static / auto: replace — we know the spec is plain static and rewriting
+	//                    is safe.
+	//
+	// Injecting bare %autorelease / %autochangelog into a manual or
+	// already-customized spec drops author-specified args and triggers
+	// rpmautospec to walk the entire upstream history (which can hang on
+	// AZL's rpmautospec 0.8.3 when the spec uses %rpmversion).
+	replaceRelease := config.Release.Calculation != projectconfig.ReleaseCalculationManual &&
+		config.Release.Calculation != projectconfig.ReleaseCalculationAutorelease
+	replaceChangelog := config.Changelog.Calculation != projectconfig.ChangelogCalculationManual &&
+		config.Changelog.Calculation != projectconfig.ChangelogCalculationAutochangelog
+
+	if err := CommitInterleavedHistory(
+		sourcesRepo, changes, importCommit, bumps, replaceRelease, replaceChangelog,
+	); err != nil {
 		return fmt.Errorf("failed to commit synthetic history:\n%w", err)
 	}
 
