@@ -83,7 +83,7 @@ func TestCommitInterleavedHistory_AllOnTop(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
 	require.NoError(t, err)
 
 	// Verify the commit log: upstream + 2 synthetic = 3 commits.
@@ -200,7 +200,7 @@ func TestCommitInterleavedHistory_Interleaved(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String())
+	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String(), nil)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -281,7 +281,7 @@ func TestCommitInterleavedHistory_SingleCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
 	require.NoError(t, err)
 
 	// Verify working tree changes are in the single synthetic commit.
@@ -360,7 +360,7 @@ func TestCommitInterleavedHistory_OrphanUpstreamCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -449,7 +449,7 @@ func TestCommitInterleavedHistory_LocalComponent(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "")
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
 	require.NoError(t, err)
 
 	// Verify: initial commit + 2 synthetic = 3 commits.
@@ -626,7 +626,7 @@ func TestCommitInterleavedHistory_MergeCommitInUpstream(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, commitA.String())
+	err = sources.CommitInterleavedHistory(repo, changes, commitA.String(), nil)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -792,4 +792,160 @@ func TestBuildDirtyChange(t *testing.T) {
 			assert.NotZero(t, result.Timestamp)
 		})
 	}
+}
+
+func TestCommitInterleavedHistory_BumpInjection(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	file, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file.Write([]byte("Name: package\nVersion: 1.0\n"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = specFile.Write([]byte("Name: package\nVersion: 1.0\n# overlays\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	upstreamHash := upstream1.String()
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "aaa111",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Config change",
+			},
+			UpstreamCommit: upstreamHash,
+		},
+	}
+
+	bumps := map[string]int{upstreamHash: 3}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps)
+	require.NoError(t, err)
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	var logCommits []*object.Commit
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		logCommits = append(logCommits, c)
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	// upstream(1) + bumps(3) + synthetic(1) = 5
+	assert.Len(t, logCommits, 5, "upstream(1) + bumps(3) + synthetic(1)")
+
+	shortAnchor := upstreamHash[:7]
+
+	for _, c := range logCommits[1:4] {
+		assert.Contains(t, c.Message, sources.SkipChangelogMarker,
+			"bump commit must contain skip changelog marker")
+		assert.Contains(t, c.Message, shortAnchor,
+			"bump commit must reference anchor short hash")
+	}
+}
+
+func TestCommitInterleavedHistory_BumpUnmatchedAnchorWarns(t *testing.T) {
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	file, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = file.Write([]byte("Name: package\nVersion: 1.0\n"))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("package.spec")
+	require.NoError(t, err)
+
+	upstream1, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	specFile, err := memFS.Create("package.spec")
+	require.NoError(t, err)
+
+	_, err = specFile.Write([]byte("Name: package\nVersion: 1.0\n# overlay\n"))
+	require.NoError(t, err)
+	require.NoError(t, specFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "bbb222",
+				Author:      "Bob",
+				AuthorEmail: "bob@example.com",
+				Timestamp:   time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Change",
+			},
+			UpstreamCommit: upstream1.String(),
+		},
+	}
+
+	bumps := map[string]int{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 10}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps)
+	require.NoError(t, err, "unmatched anchors should warn, not error")
+
+	head, err := repo.Head()
+	require.NoError(t, err)
+
+	commitIter, err := repo.Log(&gogit.LogOptions{From: head.Hash()})
+	require.NoError(t, err)
+
+	count := 0
+
+	err = commitIter.ForEach(func(c *object.Commit) error {
+		count++
+
+		return nil
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, count, "upstream(1) + synthetic(1), no bump commits")
 }

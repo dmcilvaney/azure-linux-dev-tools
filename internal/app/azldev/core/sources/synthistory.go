@@ -121,10 +121,17 @@ func FindFingerprintChanges(
 //
 // When importCommit is non-empty, only upstream commits from importCommit
 // onward are considered for interleaving.
+//
+// The bumps map, when non-nil, injects additional synth "bump" commits at
+// anchor points during replay. Each key is an upstream commit hash; its value
+// is the number of bump commits to inject right after that upstream commit.
+// Bump commits satisfy the rpmautospec contract via [Contract.Materialize]
+// and carry the [SkipChangelogMarker] via [Contract.CommitMessage].
 func CommitInterleavedHistory(
 	repo *gogit.Repository,
 	changes []FingerprintChange,
 	importCommit string,
+	bumps map[string]int,
 ) error {
 	// No changes means no synthetic commits to create, so skip the whole process.
 	if len(changes) == 0 {
@@ -152,7 +159,7 @@ func CommitInterleavedHistory(
 	// Build the full interleaved sequence of upstream and synthetic commits.
 	sequence := buildInterleavedSequence(upstreamCommits, changes)
 
-	return replayInterleavedHistory(repo, sequence, overlayTreeHash)
+	return replayInterleavedHistory(repo, sequence, overlayTreeHash, bumps)
 }
 
 // stageAndCaptureOverlayTree stages all working tree changes and creates a
@@ -257,60 +264,81 @@ func buildInterleavedSequence(
 
 // replayInterleavedHistory walks the interleaved sequence and creates new
 // commit objects with correct tree hashes and parent chains. The first upstream
-// commit (import-commit) is kept as-is; subsequent upstream commits are
-// recreated with updated parents. Synthetic commits are empty except for the
-// very last one, which carries the overlay tree.
+// commit (import-commit) is kept as-is (seed); all subsequent commits have
+// their trees materialized via [Contract] to satisfy the rpmautospec invariants.
+// Bump commits are injected after their anchor upstream commit.
 func replayInterleavedHistory(
 	repo *gogit.Repository,
 	sequence []interleavedEntry,
 	overlayTreeHash plumbing.Hash,
+	bumps map[string]int,
 ) error {
 	syntheticCount := countSyntheticEntries(sequence)
 
+	sidecarBlobHash, err := LookupOverlaySidecarBlob(repo, overlayTreeHash)
+	if err != nil {
+		return err
+	}
+
+	contract := Contract{SidecarBlob: sidecarBlobHash}
+
+	// Track which bump anchors have been consumed.
+	consumedAnchors := make(map[string]bool, len(bumps))
+
 	var (
 		lastHash     plumbing.Hash
-		lastTreeHash plumbing.Hash
 		syntheticIdx int
+		startIdx     int
 	)
 
-	for idx, entry := range sequence {
-		if idx == 0 && entry.upstreamCommit != nil {
-			lastHash = entry.upstreamCommit.Hash
-			lastTreeHash = entry.upstreamCommit.TreeHash
+	// Handle the seed commit (idx==0) outside the loop to reduce cyclomatic complexity.
+	if len(sequence) > 0 && sequence[0].upstreamCommit != nil {
+		lastHash = sequence[0].upstreamCommit.Hash
+		startIdx = 1
 
-			continue
+		var bumpErr error
+
+		lastHash, bumpErr = tryInjectBumps(repo, lastHash, sequence[0].upstreamCommit.Hash.String(),
+			bumps, consumedAnchors, contract)
+		if bumpErr != nil {
+			return bumpErr
 		}
+	}
+
+	for idx := startIdx; idx < len(sequence); idx++ {
+		entry := sequence[idx]
 
 		if entry.upstreamCommit != nil {
-			hash, err := replayUpstreamCommit(repo, entry.upstreamCommit, lastHash)
-			if err != nil {
-				return err
+			replayedHash, replayErr := replayUpstreamWithContract(repo, entry.upstreamCommit, lastHash, contract)
+			if replayErr != nil {
+				return replayErr
 			}
 
-			lastHash = hash
-			lastTreeHash = entry.upstreamCommit.TreeHash
+			lastHash = replayedHash
+
+			var bumpErr error
+
+			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(),
+				bumps, consumedAnchors, contract)
+			if bumpErr != nil {
+				return bumpErr
+			}
 
 			continue
 		}
 
 		syntheticIdx++
 
-		isLast := syntheticIdx == syntheticCount
-
-		treeHash := lastTreeHash
-		if isLast {
-			treeHash = overlayTreeHash
-		}
-
-		hash, err := createSyntheticCommit(repo, entry.syntheticChange, treeHash, lastHash,
+		hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, overlayTreeHash, lastHash,
 			syntheticIdx, syntheticCount)
-		if err != nil {
-			return err
+		if synthErr != nil {
+			return synthErr
 		}
 
 		lastHash = hash
-		lastTreeHash = treeHash
 	}
+
+	warnUnmatchedBumps(bumps, consumedAnchors)
 
 	if err := updateHead(repo, lastHash); err != nil {
 		return err
@@ -323,28 +351,129 @@ func replayInterleavedHistory(
 	return nil
 }
 
-// replayUpstreamCommit recreates an upstream commit with a new parent, preserving
-// tree content, author, committer, and message. Merge commits (multiple parents)
-// are linearized by replaying them as single-parent commits — the tree hash is
-// preserved so the merged content is retained.
-func replayUpstreamCommit(
+// warnUnmatchedBumps logs a warning for any bump anchors not consumed during replay.
+func warnUnmatchedBumps(bumps map[string]int, consumedAnchors map[string]bool) {
+	for anchor, count := range bumps {
+		if count > 0 && !consumedAnchors[anchor] {
+			slog.Warn("Bump anchor not found in replayed history; skipping",
+				"anchor", anchor,
+				"count", count)
+		}
+	}
+}
+
+// replayUpstreamWithContract recreates an upstream commit with a contract-
+// satisfying tree and a new parent. Merge commits are linearized.
+func replayUpstreamWithContract(
 	repo *gogit.Repository,
 	commit *object.Commit,
 	parentHash plumbing.Hash,
+	contract Contract,
 ) (plumbing.Hash, error) {
+	newTree, err := contract.Materialize(repo, commit.TreeHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("materialize contract for replayed upstream:\n%w", err)
+	}
+
 	if len(commit.ParentHashes) > 1 {
 		slog.Debug("Linearizing merge commit in upstream history",
 			"commit", commit.Hash,
 			"parentCount", len(commit.ParentHashes))
 	}
 
-	hash, err := createCommitObject(repo, commit.TreeHash, parentHash,
+	hash, err := createCommitObject(repo, newTree, parentHash,
 		commit.Author, commit.Committer, commit.Message)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to replay upstream commit:\n%w", err)
 	}
 
 	return hash, nil
+}
+
+// tryInjectBumps checks if the bumps map has an entry for commitHash. If so,
+// it injects the corresponding bump commits and marks the anchor as consumed.
+func tryInjectBumps(
+	repo *gogit.Repository,
+	lastHash plumbing.Hash,
+	commitHash string,
+	bumps map[string]int,
+	consumedAnchors map[string]bool,
+	contract Contract,
+) (plumbing.Hash, error) {
+	count, ok := bumps[commitHash]
+	if !ok || count <= 0 {
+		return lastHash, nil
+	}
+
+	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count, contract)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	consumedAnchors[commitHash] = true
+
+	return bumpHash, nil
+}
+
+// shortHashLen is the number of hex characters used when abbreviating a
+// commit hash for human-readable log/commit messages.
+const shortHashLen = 7
+
+// replayBumpCommits injects count synth "bump" commits right after the anchor.
+// Each commit's tree is produced by [Contract.Materialize] on the parent tree,
+// ensuring the rpmautospec contract is satisfied. The commit message carries
+// the [SkipChangelogMarker] via [Contract.CommitMessage].
+func replayBumpCommits(
+	repo *gogit.Repository,
+	parentHash plumbing.Hash,
+	anchorHash string,
+	count int,
+	contract Contract,
+) (plumbing.Hash, error) {
+	parentCommit, err := repo.CommitObject(parentHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("reading parent commit for bump injection:\n%w", err)
+	}
+
+	// Materialize a contract-satisfying tree from the parent.
+	bumpContract := contract
+	bumpContract.SkipChangelog = true
+
+	bumpTree, err := bumpContract.Materialize(repo, parentCommit.TreeHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("materialize contract for bump commits:\n%w", err)
+	}
+
+	shortAnchor := anchorHash
+	if len(shortAnchor) > shortHashLen {
+		shortAnchor = shortAnchor[:shortHashLen]
+	}
+
+	current := parentHash
+
+	for idx := 1; idx <= count; idx++ {
+		msg := bumpContract.CommitMessage(fmt.Sprintf("bump %s (%d/%d)", shortAnchor, idx, count))
+
+		author := object.Signature{
+			Name:  "azldev",
+			Email: "azldev@local",
+			When:  time.Unix(0, 0).UTC(),
+		}
+
+		hash, createErr := createCommitObject(repo, bumpTree, current, author, author, msg)
+		if createErr != nil {
+			return plumbing.ZeroHash, fmt.Errorf("creating bump commit %d/%d for anchor %s:\n%w",
+				idx, count, shortAnchor, createErr)
+		}
+
+		slog.Debug("Created bump commit",
+			"anchor", shortAnchor,
+			"bump", fmt.Sprintf("%d/%d", idx, count))
+
+		current = hash
+	}
+
+	return current, nil
 }
 
 // createSyntheticCommit creates a synthetic commit from a [FingerprintChange],
