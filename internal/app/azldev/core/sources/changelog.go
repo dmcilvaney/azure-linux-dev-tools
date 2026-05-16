@@ -126,7 +126,11 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 		return nil
 	}
 
-	sidecarBody, sidecarSource := pickSidecarBody(sourcesDirPath, importCommit, filepath.Base(specPath), body)
+	sidecarBody, sidecarSource, pickErr := pickSidecarBody(sourcesDirPath, importCommit, filepath.Base(specPath), body)
+	if pickErr != nil {
+		return fmt.Errorf("failed to determine sidecar body for component %#q:\n%w",
+			component.GetName(), pickErr)
+	}
 
 	sidecarPath := filepath.Join(filepath.Dir(specPath), ChangelogSidecarFilename)
 	if err := writeChangelogSidecar(p.fs, sidecarPath, sidecarBody); err != nil {
@@ -155,25 +159,26 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 }
 
 // pickSidecarBody chooses the changelog body to write into the sidecar.
-// When importCommit is non-empty and readable, returns the import-commit's
-// spec body. Otherwise returns the working-dir body as fallback.
+// When importCommit is set, the import-commit's spec body MUST be readable;
+// failure is an error (not a fallback) because the working-dir body would
+// produce duplicate changelog entries.
 func pickSidecarBody(
 	sourcesDirPath, importCommit, specBasename string,
 	workingBody []string,
-) ([]string, string) {
+) ([]string, string, error) {
 	if importCommit == "" {
-		return workingBody, "working-dir"
+		return workingBody, "working-dir", nil
 	}
 
 	importBody, err := extractChangelogBodyFromImportCommit(sourcesDirPath, importCommit, specBasename)
 	if err != nil {
-		slog.Warn("Falling back to working-dir spec body for sidecar; cannot read import-commit spec",
-			"importCommit", importCommit, "err", err)
-
-		return workingBody, "working-dir"
+		return nil, "", fmt.Errorf(
+			"cannot read import-commit %s spec for sidecar body "+
+				"(this would produce duplicate changelog entries): %w",
+			importCommit[:7], err)
 	}
 
-	return importBody, "import-commit"
+	return importBody, "import-commit", nil
 }
 
 // extractChangelogBodyFromImportCommit opens the sources git repo, reads the
