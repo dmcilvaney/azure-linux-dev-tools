@@ -90,6 +90,10 @@ func main() {
 		}
 
 		name := strings.TrimSuffix(entry.Name(), ".lock")
+		if name == "" {
+			continue
+		}
+
 		if *componentFilter != "" && name != *componentFilter {
 			continue
 		}
@@ -164,9 +168,11 @@ func processLock(
 
 	newRelease, newErr := readNewReleaseNumber(newSpecPath)
 	if newErr != nil {
-		log.Printf("ERROR %s: reading new release_number: %v", name, newErr)
+		// Components without rpmautospec header (manual mode, macro-indirected
+		// Release, etc.) are expected — skip, don't error.
+		log.Printf("SKIP  %s: %v", name, newErr)
 
-		return "errored"
+		return "skipped"
 	}
 
 	gap := oldRelease - newRelease
@@ -179,7 +185,7 @@ func processLock(
 	}
 
 	log.Printf("BUMP  %-30s  old=%d  new=%d  gap=%d  anchor=%s",
-		name, oldRelease, newRelease, gap, lock.UpstreamCommit[:shortHashLen])
+		name, oldRelease, newRelease, gap, safeShortHash(lock.UpstreamCommit, shortHashLen))
 
 	if !dryRun {
 		lock.Bumps = map[string]int{lock.UpstreamCommit: gap}
@@ -192,7 +198,7 @@ func processLock(
 
 		comment := fmt.Sprintf(
 			"# Migration: static Release %d -> %%autorelease (base %d) at upstream commit %s. Gap = %d.",
-			oldRelease, newRelease, lock.UpstreamCommit[:shortHashLen+5], gap)
+			oldRelease, newRelease, safeShortHash(lock.UpstreamCommit, 12), gap)
 
 		if commentErr := insertCommentAfterBumps(lockPath, comment); commentErr != nil {
 			log.Printf("WARN  %s: could not add comment to lock: %v", name, commentErr)
@@ -204,6 +210,15 @@ func processLock(
 
 // shortHashLen is used for log-friendly commit hash abbreviations.
 const shortHashLen = 7
+
+// safeShortHash returns the first n characters of hash, or the full hash if shorter.
+func safeShortHash(hash string, length int) string {
+	if len(hash) < length {
+		return hash
+	}
+
+	return hash[:length]
+}
 
 // readOldRelease reads the static Release value from the spec at HEAD in the
 // rendered-specs repo. Returns the integer portion (e.g., 52 from "52%{?dist}").
