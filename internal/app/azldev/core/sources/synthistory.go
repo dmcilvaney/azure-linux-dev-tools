@@ -329,7 +329,16 @@ func replayInterleavedHistory(
 
 		syntheticIdx++
 
-		hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, overlayTreeHash, lastHash,
+		// Route overlay tree through Contract.Materialize to guarantee the
+		// same tree-rewriting path as replayed upstream and bump commits.
+		// The on-disk flip should produce an identical tree, but this
+		// enforces SSOT via the Contract.
+		synthTree, materializeErr := contract.Materialize(repo, overlayTreeHash)
+		if materializeErr != nil {
+			return fmt.Errorf("materialize contract for synthetic commit:\n%w", materializeErr)
+		}
+
+		hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, synthTree, lastHash,
 			syntheticIdx, syntheticCount)
 		if synthErr != nil {
 			return synthErr
