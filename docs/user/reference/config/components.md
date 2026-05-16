@@ -10,6 +10,7 @@ A component definition tells azldev where to find the spec file, how to customiz
 |-------|----------|------|----------|-------------|
 | Spec source | `spec` | [SpecSource](#spec-source) | No | Where to find the spec file for this component. Inherited from distro defaults if not specified. |
 | Release config | `release` | [ReleaseConfig](#release-configuration) | No | Controls how the Release tag is managed during rendering |
+| Changelog config | `changelog` | [ChangelogConfig](#changelog-configuration) | No | Controls how the %changelog block is materialized during rendering |
 | Overlays | `overlays` | array of [Overlay](overlays.md) | No | Modifications to apply to the spec and/or source files |
 | Build config | `build` | [BuildConfig](#build-configuration) | No | Build-time options (macros, conditionals, check config) |
 | Render config | `render` | [RenderConfig](#render-configuration) | No | Options controlling spec rendering behavior |
@@ -110,9 +111,9 @@ The `[components.<name>.release]` section controls how azldev manages the Releas
 
 | Mode | Behavior |
 |------|----------|
-| `auto` | Auto-detects from the spec's Release tag value. If `%autorelease` is found, rpmautospec handles it. If a static integer is found, optionally followed by `%{?dist}` or `%{dist}`, it is bumped by the synthetic commit count. |
-| `autorelease` | Explicitly declares the spec uses `%autorelease`. Skips all Release manipulation. Use this for specs with conditional `%autorelease`/`%else` fallbacks that confuse auto-detection. |
-| `static` | Explicitly declares the spec uses a static integer release. Bumps it by the synthetic commit count only when the Release tag is an integer, optionally followed by `%{?dist}` or `%{dist}`. Non-integer or other non-standard Release values (for example, `%{pkg_release}`) require `manual` or an overlay. |
+| `auto` | Auto-detects from the spec's Release tag value. If `%autorelease` is found, no action is taken. If a static integer is found (optionally followed by `%{?dist}` or `%{dist}`), it is flipped to `%autorelease` so rpmautospec derives the release number from the synthetic git history. Non-standard Release values (e.g. `%{pkg_release}`) produce an error pointing at `manual` mode. |
+| `autorelease` | Explicitly declares the spec uses `%autorelease` (possibly via macro indirection). Skips all Release manipulation. Use this for specs with conditional `%autorelease`/`%else` fallbacks or macro-wrapped Release values that confuse auto-detection. |
+| `static` | Explicitly declares the spec uses a static integer release. Validates the value is a standard integer (± `%{?dist}`), then flips it to `%autorelease`. Errors if the spec already uses `%autorelease`. |
 | `manual` | Skips all automatic Release manipulation. Use for components that manage their own release numbering (e.g. kernel). |
 
 Most components use `auto` (the default) and need no release configuration. Examples:
@@ -124,6 +125,31 @@ calculation = "autorelease"
 
 # Component that manages its own release numbering:
 [components.kernel.release]
+calculation = "manual"
+```
+
+## Changelog Configuration
+
+The `[components.<name>.changelog]` section controls how azldev manages the `%changelog` block during rendering.
+
+| Field | TOML Key | Type | Required | Description |
+|-------|----------|------|----------|-------------|
+| Calculation | `calculation` | string | No | One of `"auto"` (default), `"autochangelog"`, `"static"`, or `"manual"` |
+
+### Calculation Modes
+
+| Mode | Behavior |
+|------|----------|
+| `auto` | Auto-detects from the spec's `%changelog` body. If `%autochangelog` is found, rpmautospec handles it. If a static body is found, it is extracted to a `changelog` sidecar file and the body is replaced with `%autochangelog`. Specs with no `%changelog` section are skipped. |
+| `autochangelog` | Explicitly declares the spec uses `%autochangelog`. No changelog manipulation is performed. |
+| `static` | Explicitly declares the spec has a static `%changelog`. Extracts entries to a sidecar and replaces the body with `%autochangelog`. Errors if already `%autochangelog` or no `%changelog` section. |
+| `manual` | Skips all automatic `%changelog` manipulation. Use for components that manage their own changelog. |
+
+Examples:
+
+```toml
+# Component that manages its own changelog:
+[components.kernel.changelog]
 calculation = "manual"
 ```
 
