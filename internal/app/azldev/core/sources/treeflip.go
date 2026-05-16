@@ -149,8 +149,7 @@ func flipSpecBlob(repo *gogit.Repository, specEntry *object.TreeEntry) (plumbing
 
 	specFile, err := spec.OpenSpec(bytes.NewReader(specBytes))
 	if err != nil {
-		// Malformed spec — leave it alone rather than failing the render.
-		return specEntry.Hash, false, nil //nolint:nilerr // graceful degradation
+		return plumbing.ZeroHash, false, fmt.Errorf("malformed spec %#q: %w", specEntry.Name, err)
 	}
 
 	// Flip %changelog → %autochangelog. Missing section is non-fatal.
