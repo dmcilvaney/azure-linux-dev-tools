@@ -134,6 +134,18 @@ func Parse(data []byte) (*ComponentLock, error) {
 			lock.Version, currentVersion)
 	}
 
+	// Normalize Bumps keys to lowercase for case-insensitive matching
+	// against go-git's always-lowercase commit hashes.
+	if len(lock.Bumps) > 0 {
+		normalized := make(map[string]int, len(lock.Bumps))
+
+		for key, val := range lock.Bumps {
+			normalized[strings.ToLower(key)] = val
+		}
+
+		lock.Bumps = normalized
+	}
+
 	return &lock, nil
 }
 
