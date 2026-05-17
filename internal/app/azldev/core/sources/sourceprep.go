@@ -484,7 +484,17 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		bumps = lock.Bumps
 	}
 
-	if err := CommitInterleavedHistory(sourcesRepo, changes, importCommit, bumps); err != nil {
+	// Only flip Release / %changelog macros when the component is configured
+	// to use rpmautospec for that field. Injecting %autorelease / %autochangelog
+	// into a manual spec triggers rpmautospec to walk the entire upstream
+	// history during process-distgit (and can hang on AZL's rpmautospec 0.8.3
+	// when the spec uses %rpmversion).
+	flipRelease := config.Release.Calculation != projectconfig.ReleaseCalculationManual
+	flipChangelog := config.Changelog.Calculation != projectconfig.ChangelogCalculationManual
+
+	if err := CommitInterleavedHistory(
+		sourcesRepo, changes, importCommit, bumps, flipRelease, flipChangelog,
+	); err != nil {
 		return fmt.Errorf("failed to commit synthetic history:\n%w", err)
 	}
 

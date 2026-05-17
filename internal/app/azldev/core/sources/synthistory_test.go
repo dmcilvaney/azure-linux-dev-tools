@@ -83,7 +83,7 @@ func TestCommitInterleavedHistory_AllOnTop(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify the commit log: upstream + 2 synthetic = 3 commits.
@@ -200,7 +200,7 @@ func TestCommitInterleavedHistory_Interleaved(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String(), nil)
+	err = sources.CommitInterleavedHistory(repo, changes, upstream1.String(), nil, true, true)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -281,7 +281,7 @@ func TestCommitInterleavedHistory_SingleCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify working tree changes are in the single synthetic commit.
@@ -360,7 +360,7 @@ func TestCommitInterleavedHistory_OrphanUpstreamCommit(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -449,7 +449,7 @@ func TestCommitInterleavedHistory_LocalComponent(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// Verify: initial commit + 2 synthetic = 3 commits.
@@ -626,7 +626,7 @@ func TestCommitInterleavedHistory_MergeCommitInUpstream(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, commitA.String(), nil)
+	err = sources.CommitInterleavedHistory(repo, changes, commitA.String(), nil, true, true)
 	require.NoError(t, err)
 
 	// Expected order (newest first):
@@ -847,7 +847,7 @@ func TestCommitInterleavedHistory_BumpInjection(t *testing.T) {
 
 	bumps := map[string]int{upstreamHash: 3}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", bumps)
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps, true, true)
 	require.NoError(t, err)
 
 	head, err := repo.Head()
@@ -929,7 +929,7 @@ func TestCommitInterleavedHistory_BumpUnmatchedAnchorWarns(t *testing.T) {
 
 	bumps := map[string]int{"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef": 10}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", bumps)
+	err = sources.CommitInterleavedHistory(repo, changes, "", bumps, true, true)
 	require.NoError(t, err, "unmatched anchors should warn, not error")
 
 	head, err := repo.Head()
@@ -1006,7 +1006,7 @@ func TestCommitInterleavedHistory_WorktreeCleanAfterContractFlip(t *testing.T) {
 		},
 	}
 
-	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil, true, true)
 	require.NoError(t, err)
 
 	// The working tree and index MUST be clean after replay. A stale index

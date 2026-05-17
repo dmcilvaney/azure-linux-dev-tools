@@ -127,11 +127,18 @@ func FindFingerprintChanges(
 // is the number of bump commits to inject right after that upstream commit.
 // Bump commits satisfy the rpmautospec contract via [Contract.Materialize]
 // and carry the [SkipChangelogMarker] via [Contract.CommitMessage].
+//
+// flipRelease and flipChangelog control whether the spec's Release tag and
+// %changelog body are rewritten to %autorelease / %autochangelog during
+// replay. Both should be false for components configured with manual release
+// AND manual changelog calculation — injecting auto* macros into a manual
+// spec triggers rpmautospec to walk the entire upstream history.
 func CommitInterleavedHistory(
 	repo *gogit.Repository,
 	changes []FingerprintChange,
 	importCommit string,
 	bumps map[string]int,
+	flipRelease, flipChangelog bool,
 ) error {
 	// No changes means no synthetic commits to create, so skip the whole process.
 	if len(changes) == 0 {
@@ -159,7 +166,7 @@ func CommitInterleavedHistory(
 	// Build the full interleaved sequence of upstream and synthetic commits.
 	sequence := buildInterleavedSequence(upstreamCommits, changes)
 
-	return replayInterleavedHistory(repo, sequence, overlayTreeHash, bumps)
+	return replayInterleavedHistory(repo, sequence, overlayTreeHash, bumps, flipRelease, flipChangelog)
 }
 
 // stageAndCaptureOverlayTree stages all working tree changes and creates a
@@ -272,6 +279,7 @@ func replayInterleavedHistory(
 	sequence []interleavedEntry,
 	overlayTreeHash plumbing.Hash,
 	bumps map[string]int,
+	flipRelease, flipChangelog bool,
 ) error {
 	syntheticCount := countSyntheticEntries(sequence)
 
@@ -280,7 +288,11 @@ func replayInterleavedHistory(
 		return err
 	}
 
-	contract := Contract{SidecarBlob: sidecarBlobHash}
+	contract := Contract{
+		FlipRelease:   flipRelease,
+		FlipChangelog: flipChangelog,
+		SidecarBlob:   sidecarBlobHash,
+	}
 
 	// Track which bump anchors have been consumed.
 	consumedAnchors := make(map[string]bool, len(bumps))
