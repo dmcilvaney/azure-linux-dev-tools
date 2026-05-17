@@ -111,7 +111,7 @@ Test.
 	commitHash := commitSpec(t, repo, memFS, specContent)
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -143,7 +143,7 @@ Test.
 	commitHash := commitSpec(t, repo, memFS, specContent)
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -176,7 +176,7 @@ Test.
 	commitHash := commitSpec(t, repo, memFS, specContent)
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -209,7 +209,7 @@ Test.
 	commitHash := commitSpec(t, repo, memFS, specContent)
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -254,7 +254,7 @@ func TestContract_Materialize_PreservesNonSpecEntries(t *testing.T) {
 
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -322,7 +322,7 @@ Test.
 	sidecarHash, err := repo.Storer.SetEncodedObject(sidecarObj)
 	require.NoError(t, err)
 
-	contract := sources.Contract{SidecarBlob: sidecarHash}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true, SidecarBlob: sidecarHash}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
@@ -345,14 +345,14 @@ Test.
 }
 
 func TestContract_CommitMessage_WithSkipChangelog(t *testing.T) {
-	contract := sources.Contract{SkipChangelog: true}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true, SkipChangelog: true}
 	msg := contract.CommitMessage("bump abc1234 (1/5)")
 	assert.Contains(t, msg, "bump abc1234 (1/5)")
 	assert.Contains(t, msg, "\n\n"+sources.SkipChangelogMarker)
 }
 
 func TestContract_CommitMessage_WithoutSkipChangelog(t *testing.T) {
-	contract := sources.Contract{SkipChangelog: false}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true, SkipChangelog: false}
 	msg := contract.CommitMessage("normal commit")
 	assert.Equal(t, "normal commit", msg)
 	assert.NotContains(t, msg, sources.SkipChangelogMarker)
@@ -386,9 +386,126 @@ func TestContract_Materialize_NoSpec_ReturnsSameHash(t *testing.T) {
 
 	originalTree := treeHashOf(t, repo, commitHash)
 
-	contract := sources.Contract{}
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: true}
 
 	newTree, err := contract.Materialize(repo, originalTree)
 	require.NoError(t, err)
 	assert.Equal(t, originalTree, newTree, "tree with no spec should be returned unchanged")
+}
+
+func TestContract_Materialize_NoFlips_PreservesSpec(t *testing.T) {
+	// Regression test: when both FlipRelease and FlipChangelog are false (manual
+	// release + manual changelog component), the spec must NOT be rewritten.
+	// Injecting %autorelease / %autochangelog into a manual spec triggers
+	// rpmautospec to walk the entire upstream history during process-distgit.
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	specContent := `Name: kernel
+Version: 6.18.29
+Release: %{pkg_release}
+Summary: test
+License: GPL
+
+%description
+Test.
+
+%changelog
+* Mon Jan 01 2024 Someone <s@example.com> - 6.18.29-1
+- Manual entry.
+`
+
+	commitHash := commitSpec(t, repo, memFS, specContent)
+	originalTree := treeHashOf(t, repo, commitHash)
+
+	// Both flips disabled — the manual-release + manual-changelog case.
+	contract := sources.Contract{FlipRelease: false, FlipChangelog: false}
+
+	newTree, err := contract.Materialize(repo, originalTree)
+	require.NoError(t, err)
+	assert.Equal(t, originalTree, newTree,
+		"tree must be unchanged when both flips are disabled")
+
+	specOut := readSpecFromTree(t, repo, newTree)
+	assert.Contains(t, specOut, "Release: %{pkg_release}",
+		"original Release tag must be preserved")
+	assert.NotContains(t, specOut, "%autorelease",
+		"must not inject %autorelease into manual-release spec")
+	assert.NotContains(t, specOut, "%autochangelog",
+		"must not inject %autochangelog into manual-changelog spec")
+}
+
+func TestContract_Materialize_OnlyFlipRelease(t *testing.T) {
+	// Release flip enabled, changelog flip disabled — verifies independence.
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	specContent := `Name: foo
+Version: 1.0
+Release: 5%{?dist}
+Summary: test
+License: MIT
+
+%description
+Test.
+
+%changelog
+* Mon Jan 01 2024 Someone <s@example.com> - 1.0-1
+- Entry.
+`
+
+	commitHash := commitSpec(t, repo, memFS, specContent)
+	originalTree := treeHashOf(t, repo, commitHash)
+
+	contract := sources.Contract{FlipRelease: true, FlipChangelog: false}
+
+	newTree, err := contract.Materialize(repo, originalTree)
+	require.NoError(t, err)
+
+	specOut := readSpecFromTree(t, repo, newTree)
+	assert.Contains(t, specOut, "Release: %autorelease", "Release must be flipped")
+	assert.NotContains(t, specOut, "%autochangelog", "%changelog must NOT be flipped")
+	assert.Contains(t, specOut, "- Entry.", "original changelog entries must remain")
+}
+
+func TestContract_Materialize_OnlyFlipChangelog(t *testing.T) {
+	// Changelog flip enabled, release flip disabled — verifies independence.
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	specContent := `Name: foo
+Version: 1.0
+Release: 5%{?dist}
+Summary: test
+License: MIT
+
+%description
+Test.
+
+%changelog
+* Mon Jan 01 2024 Someone <s@example.com> - 1.0-1
+- Entry.
+`
+
+	commitHash := commitSpec(t, repo, memFS, specContent)
+	originalTree := treeHashOf(t, repo, commitHash)
+
+	contract := sources.Contract{FlipRelease: false, FlipChangelog: true}
+
+	newTree, err := contract.Materialize(repo, originalTree)
+	require.NoError(t, err)
+
+	specOut := readSpecFromTree(t, repo, newTree)
+	assert.Contains(t, specOut, "Release: 5%{?dist}", "Release must NOT be flipped")
+	assert.NotContains(t, specOut, "%autorelease", "must not inject %autorelease")
+	assert.Contains(t, specOut, "%autochangelog", "%changelog body must be flipped")
 }

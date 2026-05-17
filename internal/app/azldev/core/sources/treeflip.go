@@ -27,8 +27,8 @@ const ChangelogSidecarFilename = "changelog"
 // Contract describes the rpmautospec invariants that every non-seed commit in
 // a synthetic dist-git must satisfy. The four invariants are:
 //
-//  1. Spec '%changelog' body = '%autochangelog'
-//  2. Spec 'Release' tag = '%autorelease'
+//  1. Spec '%changelog' body = '%autochangelog' (when FlipChangelog is set)
+//  2. Spec 'Release' tag = '%autorelease' (when FlipRelease is set)
 //  3. 'changelog' sidecar file present (when SidecarBlob is set)
 //  4. Bump commits carry [skip changelog] on its own line (via CommitMessage)
 //
@@ -40,6 +40,18 @@ const ChangelogSidecarFilename = "changelog"
 // input tree, and [Contract.CommitMessage] to decorate commit messages with
 // the [skip changelog] marker for bump commits.
 type Contract struct {
+	// FlipRelease controls whether the spec's 'Release' tag is rewritten to
+	// '%autorelease'. Disable when the component uses manual release calculation
+	// — injecting '%autorelease' into a manual-release spec triggers rpmautospec
+	// to walk the entire upstream history during process-distgit.
+	FlipRelease bool
+
+	// FlipChangelog controls whether the spec's '%changelog' body is rewritten
+	// to '%autochangelog'. Disable when the component uses manual changelog
+	// calculation — injecting '%autochangelog' into a manual-changelog spec
+	// triggers rpmautospec to walk the entire upstream history.
+	FlipChangelog bool
+
 	// SidecarBlob is the changelog sidecar content hash. When non-zero, the
 	// sidecar file is injected/updated in the tree. When zero, no sidecar
 	// is touched (used for non-static changelog modes).
@@ -74,7 +86,7 @@ func (c Contract) Materialize(
 		return treeHash, nil
 	}
 
-	newSpecBlobHash, specChanged, err := flipSpecBlob(repo, specEntry)
+	newSpecBlobHash, specChanged, err := flipSpecBlob(repo, specEntry, c.FlipRelease, c.FlipChangelog)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -133,15 +145,24 @@ func LookupOverlaySidecarBlob(repo *gogit.Repository, overlayTreeHash plumbing.H
 
 // --- internal helpers ---
 
-// flipSpecBlob rewrites the spec's '%changelog' body to '%autochangelog' and
-// 'Release' to '%autorelease'. Each flip is independent — a missing
-// '%changelog' section does not prevent the Release flip, and a missing
-// Release tag does not prevent the changelog flip.
+// flipSpecBlob rewrites the spec's '%changelog' body to '%autochangelog' and/or
+// 'Release' to '%autorelease' depending on the flipRelease and flipChangelog
+// flags. Each flip is independent — a missing '%changelog' section does not
+// prevent the Release flip, and a missing Release tag does not prevent the
+// changelog flip.
 //
 // Returns the new blob hash plus a flag indicating whether the spec actually
-// changed (false when the spec is malformed, both flips are no-ops, or the
+// changed (false when the spec is malformed, all flips are no-ops, or the
 // serialized output is byte-equal to the input).
-func flipSpecBlob(repo *gogit.Repository, specEntry *object.TreeEntry) (plumbing.Hash, bool, error) {
+func flipSpecBlob(
+	repo *gogit.Repository, specEntry *object.TreeEntry, flipRelease, flipChangelog bool,
+) (plumbing.Hash, bool, error) {
+	// When neither flip is requested, skip parsing entirely. This is the hot
+	// path for manual-release + manual-changelog components.
+	if !flipRelease && !flipChangelog {
+		return specEntry.Hash, false, nil
+	}
+
 	specBytes, err := readBlob(repo, specEntry.Hash)
 	if err != nil {
 		return plumbing.ZeroHash, false, fmt.Errorf("read blob for %#q:\n%w", specEntry.Name, err)
@@ -153,16 +174,20 @@ func flipSpecBlob(repo *gogit.Repository, specEntry *object.TreeEntry) (plumbing
 	}
 
 	// Flip %changelog → %autochangelog. Missing section is non-fatal.
-	if err := ReplaceChangelogBodyWithAutochangelog(specFile); err != nil {
-		if !errors.Is(err, spec.ErrSectionNotFound) {
-			return plumbing.ZeroHash, false, fmt.Errorf("flip %%changelog in %#q:\n%w", specEntry.Name, err)
+	if flipChangelog {
+		if err := ReplaceChangelogBodyWithAutochangelog(specFile); err != nil {
+			if !errors.Is(err, spec.ErrSectionNotFound) {
+				return plumbing.ZeroHash, false, fmt.Errorf("flip %%changelog in %#q:\n%w", specEntry.Name, err)
+			}
 		}
 	}
 
 	// Flip Release → %autorelease. Missing tag is non-fatal.
-	if err := FlipReleaseToAutorelease(specFile); err != nil {
-		if !errors.Is(err, spec.ErrNoSuchTag) {
-			return plumbing.ZeroHash, false, fmt.Errorf("flip Release in %#q:\n%w", specEntry.Name, err)
+	if flipRelease {
+		if err := FlipReleaseToAutorelease(specFile); err != nil {
+			if !errors.Is(err, spec.ErrNoSuchTag) {
+				return plumbing.ZeroHash, false, fmt.Errorf("flip Release in %#q:\n%w", specEntry.Name, err)
+			}
 		}
 	}
 
