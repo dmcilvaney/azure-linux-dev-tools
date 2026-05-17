@@ -949,3 +949,70 @@ func TestCommitInterleavedHistory_BumpUnmatchedAnchorWarns(t *testing.T) {
 
 	assert.Equal(t, 2, count, "upstream(1) + synthetic(1), no bump commits")
 }
+
+func TestCommitInterleavedHistory_WorktreeCleanAfterContractFlip(t *testing.T) {
+	// Regression test: when Contract.Materialize rewrites the spec (e.g.,
+	// flipping static Release to %autorelease), the index must be reset to
+	// match the new HEAD. Otherwise rpmautospec sees staged diffs and emits
+	// a spurious "Uncommitted changes" changelog entry.
+	memFS := memfs.New()
+	storer := memory.NewStorage()
+
+	repo, err := gogit.Init(storer, memFS)
+	require.NoError(t, err)
+
+	worktree, err := repo.Worktree()
+	require.NoError(t, err)
+
+	// Create an upstream commit with a STATIC Release tag that Contract
+	// will flip to %autorelease during replay.
+	specContent := "Name: test-pkg\nVersion: 1.0\nRelease: 1%{?dist}\nSummary: T\nLicense: MIT\n\n%description\nTest.\n"
+
+	file, err := memFS.Create("test-pkg.spec")
+	require.NoError(t, err)
+	_, err = file.Write([]byte(specContent))
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	_, err = worktree.Add("test-pkg.spec")
+	require.NoError(t, err)
+
+	upstreamHash, err := worktree.Commit("upstream: initial", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Upstream",
+			Email: "upstream@fedora.org",
+			When:  time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC),
+		},
+	})
+	require.NoError(t, err)
+
+	// Simulate overlay: add a comment to the spec (modifies working tree).
+	overlayFile, err := memFS.Create("test-pkg.spec")
+	require.NoError(t, err)
+	_, err = overlayFile.Write([]byte(specContent + "# overlay applied\n"))
+	require.NoError(t, err)
+	require.NoError(t, overlayFile.Close())
+
+	changes := []sources.FingerprintChange{
+		{
+			CommitMetadata: sources.CommitMetadata{
+				Hash:        "abc123",
+				Author:      "Alice",
+				AuthorEmail: "alice@example.com",
+				Timestamp:   time.Date(2025, 1, 10, 10, 0, 0, 0, time.UTC).Unix(),
+				Message:     "Apply overlay",
+			},
+			UpstreamCommit: upstreamHash.String(),
+		},
+	}
+
+	err = sources.CommitInterleavedHistory(repo, changes, "", nil)
+	require.NoError(t, err)
+
+	// The working tree and index MUST be clean after replay. A stale index
+	// causes rpmautospec to emit "Uncommitted changes".
+	status, err := worktree.Status()
+	require.NoError(t, err)
+	assert.True(t, status.IsClean(),
+		"worktree must be clean after CommitInterleavedHistory; dirty files: %v", status)
+}
