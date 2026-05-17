@@ -41,7 +41,22 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 	sourcesDirPath string,
 	importCommit string,
 ) error {
-	calc := component.GetConfig().Changelog.Calculation
+	config := component.GetConfig()
+	calc := config.Changelog.Calculation
+
+	// Manual release with non-manual changelog is a configuration error:
+	// rpmautospec derives changelog V-Rs from %autorelease counting, which
+	// requires the spec to use %autorelease. A manual Release tag produces
+	// wrong V-Rs in the materialized changelog.
+	if config.Release.Calculation == projectconfig.ReleaseCalculationManual &&
+		calc != projectconfig.ChangelogCalculationManual {
+		return fmt.Errorf(
+			"component %#q has 'release.calculation = \"manual\"' but "+
+				"'changelog.calculation' is %#q; rpmautospec cannot generate correct "+
+				"changelog entries without %%autorelease. Set "+
+				"'changelog.calculation = \"manual\"' to skip changelog materialization",
+			component.GetName(), calc)
+	}
 
 	switch calc {
 	case projectconfig.ChangelogCalculationManual:
