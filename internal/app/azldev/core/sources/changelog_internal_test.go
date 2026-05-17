@@ -65,6 +65,60 @@ func TestTryMaterializeStaticChangelog_ManualSkips(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestTryMaterializeStaticChangelog_ManualReleaseManualChangelogAllowed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	memFS := afero.NewMemMapFs()
+	preparer := newTestPreparer(memFS)
+
+	comp := mockComponent(ctrl, "aalib", &projectconfig.ComponentConfig{
+		Release: projectconfig.ReleaseConfig{
+			Calculation: projectconfig.ReleaseCalculationManual,
+		},
+		Changelog: projectconfig.ChangelogConfig{
+			Calculation: projectconfig.ChangelogCalculationManual,
+		},
+	})
+
+	err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir, "")
+	require.NoError(t, err)
+}
+
+func TestTryMaterializeStaticChangelog_ManualReleaseRejectsNonManualChangelog(t *testing.T) {
+	nonManualModes := []projectconfig.ChangelogCalculation{
+		projectconfig.ChangelogCalculationAuto,
+		projectconfig.ChangelogCalculationAutochangelog,
+		projectconfig.ChangelogCalculationStatic,
+		"", // empty defaults to auto behavior
+	}
+
+	for _, clCalc := range nonManualModes {
+		name := string(clCalc)
+		if name == "" {
+			name = "empty"
+		}
+
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			memFS := afero.NewMemMapFs()
+			preparer := newTestPreparer(memFS)
+
+			comp := mockComponent(ctrl, "aalib", &projectconfig.ComponentConfig{
+				Release: projectconfig.ReleaseConfig{
+					Calculation: projectconfig.ReleaseCalculationManual,
+				},
+				Changelog: projectconfig.ChangelogConfig{
+					Calculation: clCalc,
+				},
+			})
+
+			err := preparer.tryMaterializeStaticChangelog(comp, testSourcesDir, "")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), `release.calculation = "manual"`)
+			assert.Contains(t, err.Error(), "rpmautospec cannot generate correct")
+		})
+	}
+}
+
 func TestTryMaterializeStaticChangelog_AutochangelogSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
