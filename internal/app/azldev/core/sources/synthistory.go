@@ -353,6 +353,15 @@ func replayInterleavedHistory(
 		return err
 	}
 
+	// Reset the index and working tree to match the new HEAD. The temporary
+	// commit created by stageAndCaptureOverlayTree leaves the index pointing
+	// at the pre-Materialize overlay tree. Without a hard reset, rpmautospec
+	// sees staged diffs (the Contract flips) and emits a spurious
+	// "Uncommitted changes" changelog entry.
+	if err := resetWorktreeToHead(repo); err != nil {
+		return err
+	}
+
 	slog.Info("Interleaved synthetic history complete",
 		"syntheticCommits", syntheticCount,
 		"totalCommits", len(sequence))
@@ -576,6 +585,22 @@ func updateHead(repo *gogit.Repository, commitHash plumbing.Hash) error {
 	ref := plumbing.NewHashReference(name, commitHash)
 	if err := repo.Storer.SetReference(ref); err != nil {
 		return fmt.Errorf("failed to update HEAD to %s:\n%w", commitHash, err)
+	}
+
+	return nil
+}
+
+// resetWorktreeToHead performs a hard reset so the index and working tree match
+// the current HEAD commit. This is necessary after [updateHead] repoints HEAD
+// to a replayed commit whose tree was rewritten by [Contract.Materialize].
+func resetWorktreeToHead(repo *gogit.Repository) error {
+	wt, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("failed to get worktree for reset:\n%w", err)
+	}
+
+	if err := wt.Reset(&gogit.ResetOptions{Mode: gogit.HardReset}); err != nil {
+		return fmt.Errorf("failed to hard-reset worktree to HEAD:\n%w", err)
 	}
 
 	return nil
