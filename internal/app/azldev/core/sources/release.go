@@ -91,39 +91,43 @@ func BumpStaticRelease(releaseValue string, commitCount int) (string, error) {
 	return fmt.Sprintf("%d%s", newRelease, suffix), nil
 }
 
-// tryBumpStaticRelease manages the Release tag based on the component's release
-// calculation mode. It may bump, skip, or auto-detect depending on configuration:
+// tryApplyReleaseCalculation manages the Release tag based on the component's
+// release calculation mode. For non-manual modes the spec's Release is rewritten to
+// %autorelease so that rpmautospec derives the release number from the
+// synthetic git history.
 //
 //   - "manual":      no-op — component manages its own release numbering.
-//   - "autorelease": no-op — rpmautospec resolves the release from git history.
-//   - "static":      always bumps the static integer release by commitCount.
-//   - "auto":        auto-detects from the spec's Release tag value; skips if
-//     %autorelease is found, otherwise bumps the static integer.
-func (p *sourcePreparerImpl) tryBumpStaticRelease(
+//   - "autorelease": validate body is %autorelease. Error if not.
+//   - "static":      validate body is static, then replace with %autorelease.
+//   - "auto":        detect body shape; replace static with %autorelease;
+//     no-op if already %autorelease; error on non-standard values.
+func (p *sourcePreparerImpl) tryApplyReleaseCalculation(
 	component components.Component,
 	sourcesDirPath string,
-	commitCount int,
 ) error {
 	calc := component.GetConfig().Release.Calculation
 
 	switch calc {
 	case projectconfig.ReleaseCalculationManual:
-		slog.Debug("Component uses manual release calculation; skipping static release bump",
+		slog.Debug("Component uses manual release calculation; skipping",
 			"component", component.GetName())
 
 		return nil
 
 	case projectconfig.ReleaseCalculationAutorelease:
-		slog.Debug("Component uses autorelease calculation; skipping static release bump",
+		// Trust the config declaration — the spec uses %autorelease (possibly
+		// via macro indirection like %{samba_release}). No validation or
+		// modification needed.
+		slog.Debug("Component uses autorelease calculation; skipping",
 			"component", component.GetName())
 
 		return nil
 
 	case projectconfig.ReleaseCalculationStatic:
-		return p.readAndBumpRelease(component, sourcesDirPath, commitCount, true)
+		return p.replaceStaticReleaseWithAutorelease(component, sourcesDirPath, true)
 
 	case projectconfig.ReleaseCalculationAuto:
-		return p.readAndBumpRelease(component, sourcesDirPath, commitCount, false)
+		return p.replaceStaticReleaseWithAutorelease(component, sourcesDirPath, false)
 
 	default:
 		return fmt.Errorf("component %#q has unknown release calculation mode %#q",
@@ -131,15 +135,16 @@ func (p *sourcePreparerImpl) tryBumpStaticRelease(
 	}
 }
 
-// readAndBumpRelease reads the Release tag from the spec and bumps its static integer.
-// When requireStaticRelease is true (explicit static mode), encountering %autorelease
-// produces an error telling the user to switch to 'release.calculation = "autorelease"'.
-// When false (auto mode), specs using %autorelease are silently skipped.
-func (p *sourcePreparerImpl) readAndBumpRelease(
+// replaceStaticReleaseWithAutorelease reads the spec's Release tag and rewrites it to
+// %autorelease. When requireStatic is true (explicit "static" mode), the spec
+// must have a static Release value — encountering %autorelease is an error.
+// When false ("auto" mode), %autorelease is silently accepted (no-op).
+// Non-standard Release values (not a plain integer ± %{?dist}) always error,
+// pointing the user at 'release.calculation = "manual"'.
+func (p *sourcePreparerImpl) replaceStaticReleaseWithAutorelease(
 	component components.Component,
 	sourcesDirPath string,
-	commitCount int,
-	requireStaticRelease bool,
+	requireStatic bool,
 ) error {
 	specPath, err := p.resolveSpecPath(component, sourcesDirPath)
 	if err != nil {
@@ -153,42 +158,40 @@ func (p *sourcePreparerImpl) readAndBumpRelease(
 	}
 
 	if ReleaseUsesAutorelease(releaseValue) {
-		if requireStaticRelease {
+		if requireStatic {
 			return fmt.Errorf(
 				"component %#q has 'release.calculation = \"static\"' but its Release tag "+
 					"uses %%autorelease; set 'release.calculation = \"autorelease\"' instead",
 				component.GetName())
 		}
 
-		slog.Debug("Spec uses %%autorelease; skipping static release bump",
+		slog.Debug("Spec already uses %%autorelease; skipping rewrite",
 			"component", component.GetName())
 
 		return nil
 	}
 
-	newRelease, err := BumpStaticRelease(releaseValue, commitCount)
-	if err != nil {
+	// Validate the static value is a standard integer (± %{?dist}).
+	if !staticReleasePattern.MatchString(releaseValue) {
 		return fmt.Errorf(
-			"component %#q has a non-standard Release tag value %#q that cannot be auto-bumped; "+
-				"set 'release.calculation = \"manual\"' in the component configuration "+
-				"and add a \"spec-set-tag\" overlay for the Release tag if needed:\n%w",
-			component.GetName(), releaseValue, err)
+			"component %#q has a non-standard Release tag value %#q that cannot be "+
+				"auto-rewritten; set 'release.calculation = \"manual\"' in the component "+
+				"configuration",
+			component.GetName(), releaseValue)
 	}
 
-	slog.Info("Bumping static release",
+	slog.Info("Replacing Release with %%autorelease",
 		"component", component.GetName(),
-		"oldRelease", releaseValue,
-		"newRelease", newRelease,
-		"commitCount", commitCount)
+		"oldRelease", releaseValue)
 
 	overlay := projectconfig.ComponentOverlay{
 		Type:  projectconfig.ComponentOverlayUpdateSpecTag,
 		Tag:   "Release",
-		Value: newRelease,
+		Value: "%autorelease",
 	}
 
 	if err := ApplySpecOverlayToFileInPlace(p.fs, overlay, specPath); err != nil {
-		return fmt.Errorf("failed to apply release bump overlay for component %#q:\n%w",
+		return fmt.Errorf("failed to apply Release rewrite overlay for component %#q:\n%w",
 			component.GetName(), err)
 	}
 
