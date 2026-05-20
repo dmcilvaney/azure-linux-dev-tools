@@ -471,6 +471,12 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 		return fmt.Errorf("failed to remove submodule entries:\n%w", err)
 	}
 
+	// Materialize static '%changelog' entries via rpmautospec when configured.
+	// Runs after .git init so pickSidecarBody can read the import-commit.
+	if err := p.tryMaterializeStaticChangelog(component, sourcesDirPath, importCommit); err != nil {
+		return fmt.Errorf("failed to materialize %%changelog:\n%w", err)
+	}
+
 	if err := CommitInterleavedHistory(sourcesRepo, changes, importCommit); err != nil {
 		return fmt.Errorf("failed to commit synthetic history:\n%w", err)
 	}
@@ -514,6 +520,18 @@ func computeCurrentFingerprint(
 	if err != nil {
 		return "", fmt.Errorf("computing current fingerprint for %#q:\n%w", config.Name, err)
 	}
+
+	slog.Debug("computeCurrentFingerprint result",
+		"component", config.Name,
+		"fingerprint", identity.Fingerprint,
+		"configHash", identity.Inputs.ConfigHash,
+		"sourceIdentity", identity.Inputs.SourceIdentity,
+		"manualBump", identity.Inputs.ManualBump,
+		"releaseVer", identity.Inputs.ReleaseVer,
+		"overlayCount", len(identity.Inputs.OverlayFileHashes),
+		"release.calculation", config.Release.Calculation,
+		"changelog.calculation", config.Changelog.Calculation,
+	)
 
 	return identity.Fingerprint, nil
 }

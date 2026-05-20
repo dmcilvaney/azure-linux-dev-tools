@@ -428,6 +428,18 @@ func updateComponentLock(env *azldev.Env, store *lockfile.Store, result *UpdateR
 		return false, fmt.Errorf("computing fingerprint for %#q:\n%w", result.Component, fpErr)
 	}
 
+	slog.Debug("update fingerprint result",
+		"component", result.Component,
+		"fingerprint", identity.Fingerprint,
+		"configHash", identity.Inputs.ConfigHash,
+		"sourceIdentity", identity.Inputs.SourceIdentity,
+		"manualBump", identity.Inputs.ManualBump,
+		"releaseVer", releaseVer,
+		"overlayCount", len(identity.Inputs.OverlayFileHashes),
+		"release.calculation", result.config.Release.Calculation,
+		"changelog.calculation", result.config.Changelog.Calculation,
+	)
+
 	// Mark as changed if fingerprint differs (catches config/overlay edits
 	// even when the upstream commit is unchanged). This is the user-visible
 	// "changed" flag — it drives render/build decisions.
