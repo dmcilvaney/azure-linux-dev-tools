@@ -47,7 +47,7 @@ func mockComponent(
 	return comp
 }
 
-func TestTryBumpStaticRelease_ManualSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_ManualSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -59,11 +59,11 @@ func TestTryBumpStaticRelease_ManualSkips(t *testing.T) {
 	})
 
 	// No spec file needed — should skip before reading anything.
-	err := preparer.tryBumpStaticRelease(comp, testSourcesDir, 3)
+	err := preparer.tryApplyReleaseCalculation(comp, testSourcesDir)
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_AutoreleaseSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoreleaseSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -76,11 +76,11 @@ func TestTryBumpStaticRelease_AutoreleaseSkips(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_StaticBumps(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoReplacesStatic(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -93,17 +93,17 @@ func TestTryBumpStaticRelease_StaticBumps(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	// Verify the spec was updated.
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{?dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_StaticBumpsNonConditionalDist(t *testing.T) {
+func TestTryApplyReleaseCalculation_AutoReplacesStaticNoDist(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -116,16 +116,16 @@ func TestTryBumpStaticRelease_StaticBumpsNonConditionalDist(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_NonStandardErrorsWithoutManual(t *testing.T) {
+func TestTryApplyReleaseCalculation_NonStandardErrors(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -138,13 +138,13 @@ func TestTryBumpStaticRelease_NonStandardErrorsWithoutManual(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "kernel"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "kernel"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot be auto-bumped")
+	assert.Contains(t, err.Error(), "cannot be")
 	assert.Contains(t, err.Error(), "autospec.release-calculation")
 }
 
-func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
+func TestTryApplyReleaseCalculation_ManualAcceptsNonStandard(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -157,28 +157,28 @@ func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "kernel"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "kernel"))
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_ExplicitAutoreleaseSkips(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitAutoreleaseSkips(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
 
-	// Spec has a static release, but config says autorelease — should skip.
+	// No spec file needed — autorelease mode trusts the config declaration
+	// and skips without reading the spec (supports macro indirection).
 	comp := mockComponent(ctrl, "gvisor", &projectconfig.ComponentConfig{
 		Autospec: projectconfig.AutospecConfig{
 			ReleaseCalculation: projectconfig.ReleaseCalculationAutorelease,
 		},
 	})
 
-	// No spec file needed — should skip before reading anything.
-	err := preparer.tryBumpStaticRelease(comp, testSourcesDir, 3)
+	err := preparer.tryApplyReleaseCalculation(comp, testSourcesDir)
 	require.NoError(t, err)
 }
 
-func TestTryBumpStaticRelease_ExplicitStaticBumps(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitStaticReplaces(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -191,17 +191,17 @@ func TestTryBumpStaticRelease_ExplicitStaticBumps(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.NoError(t, err)
 
 	// Verify the spec was updated.
 	specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
 	content, err := fileutils.ReadFile(memFS, specPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(content), "Release: 4%{?dist}")
+	assert.Contains(t, string(content), "Release: %autorelease")
 }
 
-func TestTryBumpStaticRelease_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
+func TestTryApplyReleaseCalculation_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	memFS := afero.NewMemMapFs()
 	preparer := newTestPreparer(memFS)
@@ -215,7 +215,92 @@ func TestTryBumpStaticRelease_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
 		},
 	})
 
-	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
+	err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `autospec.release-calculation = "autorelease"`)
+}
+
+// TestTryApplyReleaseCalculation_AutoPreservesAutoreleaseArgs verifies that the
+// auto-detect path does not mutate a Release tag that already uses %autorelease
+// with custom flags (-b, -p, -e, -s). The auto mode is the 90% case and must
+// not silently strip author-specified arguments.
+func TestTryApplyReleaseCalculation_AutoPreservesAutoreleaseArgs(t *testing.T) {
+	cases := []string{
+		"%autorelease -b 10",
+		"%autorelease -p",
+		"%autorelease -e %{?extraver}",
+		"%autorelease -s %{date}git%{shortcommit}",
+		"%autorelease -p -b 5 -e asan",
+		"%{autorelease -e asan}",
+		"%{?autorelease}",
+	}
+
+	for _, releaseVal := range cases {
+		t.Run(releaseVal, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			memFS := afero.NewMemMapFs()
+			preparer := newTestPreparer(memFS)
+
+			writeTestSpec(t, memFS, "test-pkg", releaseVal)
+
+			comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
+				Autospec: projectconfig.AutospecConfig{
+					ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
+				},
+			})
+
+			err := preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
+			require.NoError(t, err)
+
+			specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
+			content, err := fileutils.ReadFile(memFS, specPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(content), "Release: "+releaseVal+"\n",
+				"auto mode must preserve existing %%autorelease form including args")
+		})
+	}
+}
+
+// TestTryApplyReleaseCalculation_ExplicitAutoreleasePreservesArgs verifies that
+// the explicit 'autorelease' config — the documented escape hatch for weird
+// packages — does not mutate the spec at all, regardless of what form the
+// Release tag uses (%autorelease with args, macro wrappers, etc.).
+func TestTryApplyReleaseCalculation_ExplicitAutoreleasePreservesArgs(t *testing.T) {
+	cases := []string{
+		"%autorelease -b 10",
+		"%autorelease -p",
+		"%autorelease -e %{?extraver}",
+		"%{my_custom_autorelease_macro}",
+		"%{?autorelease}%{!?autorelease:1%{?dist}}",
+	}
+
+	for _, releaseVal := range cases {
+		t.Run(releaseVal, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			memFS := afero.NewMemMapFs()
+			preparer := newTestPreparer(memFS)
+
+			writeTestSpec(t, memFS, "test-pkg", releaseVal)
+
+			specPath := filepath.Join(testSourcesDir, "test-pkg", "test-pkg.spec")
+			origContent, err := fileutils.ReadFile(memFS, specPath)
+			require.NoError(t, err)
+
+			comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
+				Autospec: projectconfig.AutospecConfig{
+					ReleaseCalculation: projectconfig.ReleaseCalculationAutorelease,
+				},
+			})
+
+			err = preparer.tryApplyReleaseCalculation(comp, filepath.Join(testSourcesDir, "test-pkg"))
+			require.NoError(t, err)
+
+			// The spec must be byte-identical: explicit autorelease config is
+			// an escape hatch that means "trust the spec, do not touch".
+			newContent, err := fileutils.ReadFile(memFS, specPath)
+			require.NoError(t, err)
+			assert.Equal(t, string(origContent), string(newContent),
+				"explicit 'autorelease' config must not modify the spec file")
+		})
+	}
 }

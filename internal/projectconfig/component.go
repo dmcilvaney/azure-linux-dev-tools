@@ -161,9 +161,9 @@ const (
 	ReleaseCalculationAutorelease ReleaseCalculation = "autorelease"
 
 	// ReleaseCalculationStatic explicitly declares that the spec uses a static
-	// release tag. azldev parses and bumps the release value during rendering.
-	// Use this for specs with conditional Release tags where auto-detection
-	// picks the wrong branch but the static release logic still works correctly.
+	// release tag. azldev validates the static value and rewrites it to %autorelease
+	// during rendering. Use this for specs with conditional Release tags where
+	// auto-detection picks the wrong branch.
 	ReleaseCalculationStatic ReleaseCalculation = "static"
 
 	// ReleaseCalculationManual skips all automatic Release tag manipulation. Use this for
@@ -179,7 +179,33 @@ const (
 type AutospecConfig struct {
 	// ReleaseCalculation controls how the Release tag is managed during rendering.
 	ReleaseCalculation ReleaseCalculation `toml:"release-calculation,omitempty" json:"releaseCalculation,omitempty" validate:"omitempty,oneof=auto autorelease static manual" jsonschema:"enum=auto,enum=autorelease,enum=static,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
+
+	// ChangelogCalculation controls how the %changelog block is materialized during rendering.
+	ChangelogCalculation ChangelogCalculation `toml:"changelog-calculation,omitempty" json:"changelogCalculation,omitempty" validate:"omitempty,oneof=auto autochangelog static manual" jsonschema:"enum=auto,enum=autochangelog,enum=static,enum=manual,default=auto,title=Changelog calculation,description=Controls how the %changelog block is materialized during rendering. Empty or omitted means auto."`
 }
+
+// ChangelogCalculation controls how the %changelog block is materialized during rendering.
+type ChangelogCalculation string
+
+const (
+	// ChangelogCalculationAuto is the default. azldev auto-detects whether the spec
+	// uses %autochangelog or a static %changelog block, and handles each accordingly.
+	ChangelogCalculationAuto ChangelogCalculation = "auto"
+
+	// ChangelogCalculationAutochangelog explicitly declares that the spec uses
+	// %autochangelog. azldev defers to rpmautospec to materialize entries from git
+	// history.
+	ChangelogCalculationAutochangelog ChangelogCalculation = "autochangelog"
+
+	// ChangelogCalculationStatic explicitly declares that the spec ships a static
+	// %changelog block. azldev materializes new entries from synthetic dist-git
+	// history and prepends them to the existing block, preserving pre-import entries.
+	ChangelogCalculationStatic ChangelogCalculation = "static"
+
+	// ChangelogCalculationManual skips all automatic %changelog manipulation. Use
+	// for components that manage their own changelog (e.g. kernel).
+	ChangelogCalculationManual ChangelogCalculation = "manual"
+)
 
 // FreshnessStatus indicates whether a component's current config matches
 // its locked state. Computed at resolve time when freshness checking is
