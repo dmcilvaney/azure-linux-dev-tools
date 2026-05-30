@@ -133,12 +133,16 @@ func FindFingerprintChanges(
 // replay. Both should be false for components configured with manual release
 // AND manual changelog calculation — injecting auto* macros into a manual
 // spec triggers rpmautospec to walk the entire upstream history.
+//
+// truncateUpstreamHistory, when true, makes the replayed seed a root commit
+// (cuts the upstream parent chain). See [replaySeedWithContract] for
+// when this opt-in workaround is needed.
 func CommitInterleavedHistory(
 	repo *gogit.Repository,
 	changes []FingerprintChange,
 	importCommit string,
 	bumps map[string]int,
-	replaceRelease, replaceChangelog bool,
+	replaceRelease, replaceChangelog, truncateUpstreamHistory bool,
 ) error {
 	// No changes means no synthetic commits to create, so skip the whole process.
 	if len(changes) == 0 {
@@ -150,11 +154,27 @@ func CommitInterleavedHistory(
 	// of HEAD, which may be ahead (e.g., at the branch tip).
 	upstreamCommit := changes[len(changes)-1].UpstreamCommit
 
-	// Collect upstream commits BEFORE staging, so the temporary commit
-	// created by stageAndCaptureOverlayTree is not included.
-	upstreamCommits, err := collectUpstreamCommits(repo, importCommit, upstreamCommit)
+	// Collect upstream boundary commits BEFORE staging, so the temporary
+	// commit created by stageAndCaptureOverlayTree is not included.
+	//
+	// Collapsed mode: instead of walking every intermediate upstream commit
+	// between import-commit and upstream-commit, collect only the two
+	// boundary commits (import + tip). Intermediate commits add no value
+	// for static-changelog packages — the sidecar provides pre-import
+	// history, attribution diffs the import spec vs upstream spec for
+	// post-import entries, and bumps handle release numbering.
+	//
+	// This reduces a 6000-commit kernel history to at most 2 commits.
+	upstreamCommits, skippedCount, err := collectBoundaryCommits(repo, importCommit, upstreamCommit)
 	if err != nil {
 		return err
+	}
+
+	if skippedCount > 0 {
+		slog.Info("Collapsed upstream history",
+			"importCommit", safeShortHash(importCommit, shortHashLen),
+			"upstreamCommit", safeShortHash(upstreamCommit, shortHashLen),
+			"skippedCommits", skippedCount)
 	}
 
 	// Stage overlay changes and capture the resulting tree hash.
@@ -166,7 +186,10 @@ func CommitInterleavedHistory(
 	// Build the full interleaved sequence of upstream and synthetic commits.
 	sequence := buildInterleavedSequence(upstreamCommits, changes)
 
-	return replayInterleavedHistory(repo, sequence, overlayTreeHash, bumps, replaceRelease, replaceChangelog)
+	return replayInterleavedHistory(
+		repo, sequence, overlayTreeHash, bumps,
+		replaceRelease, replaceChangelog, truncateUpstreamHistory,
+	)
 }
 
 // stageAndCaptureOverlayTree stages all working tree changes and creates a
@@ -270,16 +293,17 @@ func buildInterleavedSequence(
 }
 
 // replayInterleavedHistory walks the interleaved sequence and creates new
-// commit objects with correct tree hashes and parent chains. The first upstream
-// commit (import-commit) is kept as-is (seed); all subsequent commits have
-// their trees materialized via [Contract] to satisfy the rpmautospec invariants.
+// commit objects with correct tree hashes and parent chains. The seed
+// (import-commit) is replayed via [replaySeedWithContract]; post-seed
+// upstream commits are replayed via [replayUpstreamWithContract]. All trees
+// are materialized via [Contract] to satisfy the rpmautospec invariants.
 // Bump commits are injected after their anchor upstream commit.
 func replayInterleavedHistory(
 	repo *gogit.Repository,
 	sequence []interleavedEntry,
 	overlayTreeHash plumbing.Hash,
 	bumps map[string]int,
-	replaceRelease, replaceChangelog bool,
+	replaceRelease, replaceChangelog, truncateUpstreamHistory bool,
 ) error {
 	syntheticCount := countSyntheticEntries(sequence)
 
@@ -303,16 +327,12 @@ func replayInterleavedHistory(
 		startIdx     int
 	)
 
-	// Materialize the seed commit too. Keeping the seed's original tree leaves
-	// a static→%autochangelog boundary at synth-1, which rpmautospec sees as
-	// "changelog changed: True" and treats as a manual edit — dropping the
-	// first synth entry. By materializing the seed, the boundary moves below
-	// our walk (to upstream's natural parent) and every synth commit emits an
-	// entry.
+	// Replay the seed (import-commit). Its upstream parents are preserved
+	// unless truncateUpstreamHistory is set (see [replaySeedWithContract]).
 	if len(sequence) > 0 && sequence[0].upstreamCommit != nil {
 		seedCommit := sequence[0].upstreamCommit
 
-		replayedSeedHash, replayErr := replayUpstreamWithContract(repo, seedCommit, seedFirstParent(seedCommit), contract)
+		replayedSeedHash, replayErr := replaySeedWithContract(repo, seedCommit, contract, truncateUpstreamHistory)
 		if replayErr != nil {
 			return replayErr
 		}
@@ -323,75 +343,22 @@ func replayInterleavedHistory(
 		var bumpErr error
 
 		lastHash, bumpErr = tryInjectBumps(repo, lastHash, seedCommit.Hash.String(),
-			bumps, consumedAnchors, contract)
+			bumps, consumedAnchors, contract, overlayTreeHash)
 		if bumpErr != nil {
 			return bumpErr
 		}
 	}
 
 	for idx := startIdx; idx < len(sequence); idx++ {
-		entry := sequence[idx]
+		var replayErr error
 
-		if entry.upstreamCommit != nil {
-			replayedHash, replayErr := replayUpstreamWithContract(repo, entry.upstreamCommit, lastHash, contract)
-			if replayErr != nil {
-				return replayErr
-			}
-
-			lastHash = replayedHash
-
-			var bumpErr error
-
-			lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(),
-				bumps, consumedAnchors, contract)
-			if bumpErr != nil {
-				return bumpErr
-			}
-
-			continue
-		}
-
-		syntheticIdx++
-
-		// Choose the input tree for this synth commit:
-		//
-		//   - Last synth: use the current overlay tree. This is the only
-		//     commit whose tree should reflect the live state of the working
-		//     dir (latest version bump, overlay edits, etc).
-		//
-		//   - Non-last synth: inherit the parent commit's tree (upstream or
-		//     prior synth). This preserves the version-in-effect at each
-		//     project commit's point in history, so the rendered changelog
-		//     shows the upstream version that was current when the AZL change
-		//     was made instead of retroactively claiming the latest version
-		//     for every historical entry.
-		//
-		// Both paths go through Contract.Materialize so macro flips happen
-		// uniformly on every commit's spec.
-		isLast := syntheticIdx == syntheticCount
-		inputTree := overlayTreeHash
-
-		if !isLast {
-			parentCommit, parentErr := repo.CommitObject(lastHash)
-			if parentErr != nil {
-				return fmt.Errorf("read parent commit %s for synthetic tree inheritance:\n%w", lastHash, parentErr)
-			}
-
-			inputTree = parentCommit.TreeHash
-		}
-
-		synthTree, materializeErr := contract.Materialize(repo, inputTree)
-		if materializeErr != nil {
-			return fmt.Errorf("materialize contract for synthetic commit:\n%w", materializeErr)
-		}
-
-		hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, synthTree, lastHash,
+		lastHash, syntheticIdx, replayErr = replayEntry(
+			repo, sequence[idx], lastHash, overlayTreeHash,
+			bumps, consumedAnchors, contract,
 			syntheticIdx, syntheticCount)
-		if synthErr != nil {
-			return synthErr
+		if replayErr != nil {
+			return replayErr
 		}
-
-		lastHash = hash
 	}
 
 	warnUnmatchedBumps(bumps, consumedAnchors)
@@ -416,6 +383,81 @@ func replayInterleavedHistory(
 	return nil
 }
 
+// replayEntry replays a single interleaved entry (upstream or synthetic).
+// Returns the updated lastHash, syntheticIdx, and any error.
+func replayEntry(
+	repo *gogit.Repository,
+	entry interleavedEntry,
+	lastHash, overlayTreeHash plumbing.Hash,
+	bumps map[string]int,
+	consumedAnchors map[string]bool,
+	contract Contract,
+	syntheticIdx, syntheticCount int,
+) (plumbing.Hash, int, error) {
+	if entry.upstreamCommit != nil {
+		replayedHash, replayErr := replayUpstreamWithContract(repo, entry.upstreamCommit, lastHash, contract)
+		if replayErr != nil {
+			return plumbing.ZeroHash, syntheticIdx, replayErr
+		}
+
+		lastHash = replayedHash
+
+		var bumpErr error
+
+		lastHash, bumpErr = tryInjectBumps(repo, lastHash, entry.upstreamCommit.Hash.String(),
+			bumps, consumedAnchors, contract, overlayTreeHash)
+		if bumpErr != nil {
+			return plumbing.ZeroHash, syntheticIdx, bumpErr
+		}
+
+		return lastHash, syntheticIdx, nil
+	}
+
+	syntheticIdx++
+
+	// Choose the input tree for this synth commit:
+	//
+	//   - Last synth: use the current overlay tree. This is the only commit
+	//     whose tree should reflect the live state of the working dir
+	//     (latest version bump, overlay edits, etc).
+	//
+	//   - Non-last synth: inherit the parent commit's tree (upstream or
+	//     prior synth). This preserves the version-in-effect at each
+	//     project commit's point in history — the rendered changelog
+	//     shows "this AZL change was made while tracking upstream X.Y.Z"
+	//     rather than retroactively claiming the current overlay version
+	//     for all historical entries.
+	//
+	// Both paths go through Contract.Materialize so macro flips
+	// (Release→%autorelease, %changelog→%autochangelog, sidecar) happen
+	// uniformly on every commit's spec.
+	isLast := syntheticIdx == syntheticCount
+	inputTree := overlayTreeHash
+
+	if !isLast {
+		parentCommit, parentErr := repo.CommitObject(lastHash)
+		if parentErr != nil {
+			return plumbing.ZeroHash, syntheticIdx,
+				fmt.Errorf("read parent commit %s for synthetic tree inheritance:\n%w", lastHash, parentErr)
+		}
+
+		inputTree = parentCommit.TreeHash
+	}
+
+	synthTree, materializeErr := contract.Materialize(repo, inputTree)
+	if materializeErr != nil {
+		return plumbing.ZeroHash, syntheticIdx, fmt.Errorf("materialize contract for synthetic commit:\n%w", materializeErr)
+	}
+
+	hash, synthErr := createSyntheticCommit(repo, entry.syntheticChange, synthTree, lastHash,
+		syntheticIdx, syntheticCount)
+	if synthErr != nil {
+		return plumbing.ZeroHash, syntheticIdx, synthErr
+	}
+
+	return hash, syntheticIdx, nil
+}
+
 // warnUnmatchedBumps logs a warning for any bump anchors not consumed during replay.
 func warnUnmatchedBumps(bumps map[string]int, consumedAnchors map[string]bool) {
 	for anchor, count := range bumps {
@@ -427,8 +469,57 @@ func warnUnmatchedBumps(bumps map[string]int, consumedAnchors map[string]bool) {
 	}
 }
 
+// replaySeedWithContract recreates the seed (import-commit) with a
+// contract-satisfying tree.
+//
+// When truncateUpstreamHistory is false (the default), the seed preserves
+// ALL of its upstream parents so rpmautospec can walk the original
+// upstream history when computing %autorelease's release_number. This
+// matches the behavior of older azldev versions and is the right default
+// for new packages — they get a natural release number derived from
+// upstream commit count.
+//
+// When true (opt-in via [projectconfig.AutospecConfig.TruncateUpstreamHistory]),
+// the seed becomes a ROOT commit — rpmautospec walks only our synth chain.
+// This is the workaround for packages where rpmautospec hangs walking the
+// full upstream history (e.g. kernel's %define %rpmversion trips the spec
+// parser on every walked commit in rpmautospec 0.8.3). The trade-off is
+// that %autorelease's release_number drops to the count of synth commits
+// only; use lock-file bumps to compensate.
+func replaySeedWithContract(
+	repo *gogit.Repository,
+	commit *object.Commit,
+	contract Contract,
+	truncateUpstreamHistory bool,
+) (plumbing.Hash, error) {
+	newTree, err := contract.Materialize(repo, commit.TreeHash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("materialize contract for seed commit:\n%w", err)
+	}
+
+	var parentHashes []plumbing.Hash
+	if !truncateUpstreamHistory {
+		parentHashes = commit.ParentHashes
+	}
+
+	slog.Debug("Replaying seed commit",
+		"seed", commit.Hash,
+		"truncated", truncateUpstreamHistory,
+		"parentCount", len(parentHashes))
+
+	hash, err := createCommitObject(repo, newTree,
+		commit.Author, commit.Committer, commit.Message,
+		parentHashes...)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("failed to replay seed commit:\n%w", err)
+	}
+
+	return hash, nil
+}
+
 // replayUpstreamWithContract recreates an upstream commit with a contract-
-// satisfying tree and a new parent. Merge commits are linearized.
+// satisfying tree and a new parent. Merge commits are linearized. The
+// upstream commit's git author/committer/message are preserved verbatim.
 func replayUpstreamWithContract(
 	repo *gogit.Repository,
 	commit *object.Commit,
@@ -446,8 +537,9 @@ func replayUpstreamWithContract(
 			"parentCount", len(commit.ParentHashes))
 	}
 
-	hash, err := createCommitObject(repo, newTree, parentHash,
-		commit.Author, commit.Committer, commit.Message)
+	hash, err := createCommitObject(repo, newTree,
+		commit.Author, commit.Committer, commit.Message,
+		parentHash)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to replay upstream commit:\n%w", err)
 	}
@@ -455,21 +547,15 @@ func replayUpstreamWithContract(
 	return hash, nil
 }
 
-// seedFirstParent returns the first parent hash of the seed commit, or
-// [plumbing.ZeroHash] for a root commit. This preserves the seed's linkage to
-// the natural upstream history so rpmautospec sees the static→%autochangelog
-// boundary at the seed's parent (a real upstream commit) instead of inside our
-// synth walk.
-func seedFirstParent(seedCommit *object.Commit) plumbing.Hash {
-	if len(seedCommit.ParentHashes) == 0 {
-		return plumbing.ZeroHash
-	}
-
-	return seedCommit.ParentHashes[0]
-}
-
 // tryInjectBumps checks if the bumps map has an entry for commitHash. If so,
 // it injects the corresponding bump commits and marks the anchor as consumed.
+//
+// overlayTreeHash is the final overlay-applied tree (HEAD's tree). Bumps use
+// this as their base instead of the upstream parent tree so the rendered
+// spec filename (e.g. after a spec-set-tag Name rename overlay) is present
+// in the bump's tree. Without this, rpmautospec walks looking for the
+// renamed spec at HEAD and skips bumps that only have the original
+// upstream filename — leaving the release counter short.
 func tryInjectBumps(
 	repo *gogit.Repository,
 	lastHash plumbing.Hash,
@@ -477,13 +563,14 @@ func tryInjectBumps(
 	bumps map[string]int,
 	consumedAnchors map[string]bool,
 	contract Contract,
+	overlayTreeHash plumbing.Hash,
 ) (plumbing.Hash, error) {
 	count, ok := bumps[commitHash]
 	if !ok || count <= 0 {
 		return lastHash, nil
 	}
 
-	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count, contract)
+	bumpHash, err := replayBumpCommits(repo, lastHash, commitHash, count, contract, overlayTreeHash)
 	if err != nil {
 		return plumbing.ZeroHash, err
 	}
@@ -494,26 +581,26 @@ func tryInjectBumps(
 }
 
 // replayBumpCommits injects count synth "bump" commits right after the anchor.
-// Each commit's tree is produced by [Contract.Materialize] on the parent tree,
-// ensuring the rpmautospec contract is satisfied. The commit message carries
-// the [SkipChangelogMarker] via [Contract.CommitMessage].
+// Each commit's tree is produced by [Contract.Materialize] on overlayTreeHash
+// so the bump tree carries the final rendered spec (including any rename
+// overlays). The commit message carries the [SkipChangelogMarker] via
+// [Contract.CommitMessage].
 func replayBumpCommits(
 	repo *gogit.Repository,
 	parentHash plumbing.Hash,
 	anchorHash string,
 	count int,
 	contract Contract,
+	overlayTreeHash plumbing.Hash,
 ) (plumbing.Hash, error) {
-	parentCommit, err := repo.CommitObject(parentHash)
-	if err != nil {
-		return plumbing.ZeroHash, fmt.Errorf("reading parent commit for bump injection:\n%w", err)
-	}
-
-	// Materialize a contract-satisfying tree from the parent.
+	// Materialize a contract-satisfying tree from the overlay tree. Using
+	// the overlay tree (not the upstream parent's tree) ensures bumps have
+	// the renamed spec filename so rpmautospec counts them toward the
+	// release_number when walking from HEAD.
 	bumpContract := contract
 	bumpContract.SkipChangelog = true
 
-	bumpTree, err := bumpContract.Materialize(repo, parentCommit.TreeHash)
+	bumpTree, err := bumpContract.Materialize(repo, overlayTreeHash)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("materialize contract for bump commits:\n%w", err)
 	}
@@ -531,7 +618,7 @@ func replayBumpCommits(
 			When:  time.Unix(0, 0).UTC(),
 		}
 
-		hash, createErr := createCommitObject(repo, bumpTree, current, author, author, msg)
+		hash, createErr := createCommitObject(repo, bumpTree, author, author, msg, current)
 		if createErr != nil {
 			return plumbing.ZeroHash, fmt.Errorf("creating bump commit %d/%d for anchor %s:\n%w",
 				idx, count, shortAnchor, createErr)
@@ -571,7 +658,7 @@ func createSyntheticCommit(
 		"isLast", syntheticIdx == syntheticCount,
 	)
 
-	hash, err := createCommitObject(repo, treeHash, parentHash, author, author, message)
+	hash, err := createCommitObject(repo, treeHash, author, author, message, parentHash)
 	if err != nil {
 		return plumbing.ZeroHash, fmt.Errorf("failed to create synthetic commit %d:\n%w", syntheticIdx, err)
 	}
@@ -593,12 +680,15 @@ func countSyntheticEntries(sequence []interleavedEntry) int {
 }
 
 // createCommitObject creates a new commit in the repository's object store with
-// the given tree, parent, author, committer, and message.
+// the given tree, parents, author, committer, and message. Variadic parents
+// support merge commits with multiple parents; pass [plumbing.ZeroHash] (or
+// nothing) for root commits. Zero-hash entries are filtered out.
 func createCommitObject(
 	repo *gogit.Repository,
-	treeHash, parentHash plumbing.Hash,
+	treeHash plumbing.Hash,
 	author, committer object.Signature,
 	message string,
+	parentHashes ...plumbing.Hash,
 ) (plumbing.Hash, error) {
 	commit := &object.Commit{
 		Author:    author,
@@ -607,10 +697,12 @@ func createCommitObject(
 		TreeHash:  treeHash,
 	}
 
-	// Omit parents for root commits (e.g., when replaying a seed that has no
-	// upstream parent). go-git's log iterator chokes on ZeroHash parents.
-	if parentHash != plumbing.ZeroHash {
-		commit.ParentHashes = []plumbing.Hash{parentHash}
+	// Filter out zero-hash parents so go-git's log iterator doesn't choke on
+	// root commits that pass them as placeholders.
+	for _, p := range parentHashes {
+		if p != plumbing.ZeroHash {
+			commit.ParentHashes = append(commit.ParentHashes, p)
+		}
 	}
 
 	obj := repo.Storer.NewEncodedObject()
@@ -868,11 +960,88 @@ func readLockFileAtHEAD(
 	return nil, nil //nolint:nilnil // nil,nil signals "not found, skip" to caller.
 }
 
+// collectBoundaryCommits returns at most two upstream commits: the
+// import-commit (seed) and, when different, the upstream-commit (tip).
+// Intermediate commits are skipped — their count is returned so callers
+// can log the savings. This is the "collapsed" upstream history mode.
+//
+// When importCommit == upstreamCommit (or upstreamCommit is empty), only
+// the import-commit is returned with skippedCount=0.
+func collectBoundaryCommits(
+	repo *gogit.Repository, importCommit, upstreamCommit string,
+) ([]*object.Commit, int, error) {
+	if importCommit == "" {
+		// No import boundary — fall back to the full walk.
+		commits, err := collectUpstreamCommits(repo, importCommit, upstreamCommit)
+
+		return commits, 0, err
+	}
+
+	importObj, err := repo.CommitObject(plumbing.NewHash(importCommit))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read import-commit %#q:\n%w", importCommit, err)
+	}
+
+	// Same commit or no separate upstream → seed only.
+	if upstreamCommit == "" || upstreamCommit == importCommit {
+		return []*object.Commit{importObj}, 0, nil
+	}
+
+	upstreamObj, err := repo.CommitObject(plumbing.NewHash(upstreamCommit))
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to read upstream-commit %#q:\n%w", upstreamCommit, err)
+	}
+
+	// Count how many commits we're skipping (for logging).
+	skipped, err := countCommitsBetween(repo, importCommit, upstreamCommit)
+	if err != nil {
+		// Non-fatal: we can still proceed without the count.
+		slog.Debug("Could not count skipped commits", "err", err)
+
+		skipped = -1
+	}
+
+	// Chronological order: seed first, then tip.
+	return []*object.Commit{importObj, upstreamObj}, skipped, nil
+}
+
+// countCommitsBetween counts the number of first-parent commits strictly
+// between two commit hashes (exclusive of both endpoints). Returns -1 on
+// error (non-fatal — callers use this for logging only).
+func countCommitsBetween(repo *gogit.Repository, olderHash, newerHash string) (int, error) {
+	count := 0
+	currentHash := plumbing.NewHash(newerHash)
+
+	for {
+		commit, err := repo.CommitObject(currentHash)
+		if err != nil {
+			return -1, fmt.Errorf("load commit %s:\n%w", currentHash, err)
+		}
+
+		if len(commit.ParentHashes) == 0 {
+			break
+		}
+
+		parentHash := commit.ParentHashes[0]
+		if parentHash.String() == olderHash {
+			return count, nil
+		}
+
+		count++
+		currentHash = parentHash
+	}
+
+	return count, fmt.Errorf("older commit %s not reachable from %s", olderHash, newerHash)
+}
+
 // collectUpstreamCommits returns commits in the repository in chronological
 // order (oldest first), bounded by importCommit (inclusive start) and
 // upstreamCommit (inclusive end). Only first-parent links are followed so that
 // merge commits are included but side-branch commits are excluded, producing a
 // linear mainline history suitable for replay.
+//
+// This is the full-walk fallback used by [collectBoundaryCommits] when
+// importCommit is empty. Normal operation uses the collapsed two-commit path.
 func collectUpstreamCommits(
 	repo *gogit.Repository, importCommit, upstreamCommit string,
 ) ([]*object.Commit, error) {
