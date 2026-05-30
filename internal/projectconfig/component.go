@@ -175,6 +175,19 @@ const (
 type ReleaseConfig struct {
 	// Calculation controls how the Release tag is managed during rendering.
 	Calculation ReleaseCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto autorelease static manual" jsonschema:"enum=auto,enum=autorelease,enum=static,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
+
+	// TruncateUpstreamHistory cuts the synthetic dist-git's seed commit off
+	// from its upstream parents (making it a root commit). rpmautospec then
+	// walks only our synthetic commits when computing the release number.
+	//
+	// Use this for packages where rpmautospec hangs or fails parsing the
+	// full upstream history (e.g. kernel's "%define %rpmversion" trips
+	// rpmautospec 0.8.3's spec parser on every walked commit).
+	//
+	// Side effects: %autorelease release_number drops to the count of
+	// synthetic commits only. Use bumps in the lock file to compensate so
+	// the rendered release stays monotonically increasing.
+	TruncateUpstreamHistory bool `toml:"truncate-upstream-history,omitempty" json:"truncateUpstreamHistory,omitempty" jsonschema:"default=false,title=Truncate upstream history,description=Cut the seed commit's upstream parent chain so rpmautospec walks only synthetic commits. Workaround for packages where rpmautospec hangs walking full upstream history (e.g. kernel)."`
 }
 
 // ChangelogCalculation controls how the %changelog block is materialized during rendering.

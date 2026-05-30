@@ -237,8 +237,10 @@ func safeShortHash(hash string, length int) string {
 	return hash[:length]
 }
 
-// readOldRelease reads the static Release value from the spec at HEAD in the
-// rendered-specs repo. Returns the integer portion (e.g., 52 from "52%{?dist}").
+// readOldRelease reads the integer portion of the Release tag from the spec
+// at HEAD in the rendered-specs repo (e.g. 52 from "52%{?dist}"). Returns an
+// error if no static Release tag is found — the migration tool only processes
+// packages converting from static Release to %autorelease.
 func readOldRelease(repo *gogit.Repository, headTree *object.Tree, specRelPath string) (int, error) {
 	// Navigate the tree to find the spec blob.
 	treeEntry, err := headTree.FindEntry(specRelPath)

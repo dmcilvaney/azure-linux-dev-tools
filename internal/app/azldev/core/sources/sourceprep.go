@@ -473,8 +473,12 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 
 	// Materialize static '%changelog' entries via rpmautospec when configured.
 	// Runs after .git init so pickSidecarBody can read the import-commit.
-	if err := p.tryMaterializeStaticChangelog(component, sourcesDirPath, importCommit); err != nil {
-		return fmt.Errorf("failed to materialize %%changelog:\n%w", err)
+	// wroteSidecar tells us whether the spec was static and a sidecar file
+	// was written, which controls whether the seed's upstream parent chain
+	// is cut (sidecar mode) or preserved (autochangelog mode).
+	wroteSidecar, changelogErr := p.tryMaterializeStaticChangelog(component, sourcesDirPath, importCommit)
+	if changelogErr != nil {
+		return fmt.Errorf("failed to materialize %%changelog:\n%w", changelogErr)
 	}
 
 	// Read the current lock's Bumps map for synth-history injection.
@@ -504,11 +508,18 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 	// AZL's rpmautospec 0.8.3 when the spec uses %rpmversion).
 	replaceRelease := config.Release.Calculation != projectconfig.ReleaseCalculationManual &&
 		config.Release.Calculation != projectconfig.ReleaseCalculationAutorelease
-	replaceChangelog := config.Changelog.Calculation != projectconfig.ChangelogCalculationManual &&
-		config.Changelog.Calculation != projectconfig.ChangelogCalculationAutochangelog
+
+	// For changelog: use the wroteSidecar signal from tryMaterializeStaticChangelog.
+	// When a sidecar was written (static spec → sidecar + %autochangelog rewrite),
+	// the Contract should flip %changelog and the seed should be a root commit.
+	// When no sidecar was written (spec already uses %autochangelog, or manual),
+	// the Contract leaves %changelog alone and the seed preserves its upstream
+	// parent so rpmautospec can walk the full history.
+	replaceChangelog := wroteSidecar
 
 	if err := CommitInterleavedHistory(
-		sourcesRepo, changes, importCommit, bumps, replaceRelease, replaceChangelog,
+		sourcesRepo, changes, importCommit, bumps,
+		replaceRelease, replaceChangelog, config.Release.TruncateUpstreamHistory,
 	); err != nil {
 		return fmt.Errorf("failed to commit synthetic history:\n%w", err)
 	}

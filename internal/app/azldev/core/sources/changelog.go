@@ -31,16 +31,20 @@ var autochangelogPattern = regexp.MustCompile(`%(\{[?]?autochangelog($|[}\s])|au
 // '%autochangelog' (writing the preserved entries to a sidecar 'changelog'
 // file next to the spec) or leave the spec untouched.
 //
-//   - "manual":        no-op — component manages its own %changelog.
-//   - "autochangelog": no-op — spec already uses %autochangelog.
-//   - "static":        extracts static body → sidecar, replaces with %autochangelog.
-//     Errors if already %autochangelog or no %changelog section.
-//   - "auto" / "":     auto-detects; skips if %autochangelog, otherwise like "static".
+// Returns wroteSidecar=true when a sidecar file was actually written (static
+// or auto-detected-as-static). Callers use this to decide whether the seed
+// commit should be a root commit (sidecar provides pre-import history) or
+// preserve its upstream parent (rpmautospec walks the full history).
+//
+//   - "manual":        no-op, wroteSidecar=false.
+//   - "autochangelog": no-op, wroteSidecar=false.
+//   - "static":        extracts static body → sidecar, replaces with %autochangelog, wroteSidecar=true.
+//   - "auto" / "":     auto-detects; skips if %autochangelog (wroteSidecar=false), otherwise like "static" (wroteSidecar=true).
 func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 	component components.Component,
 	sourcesDirPath string,
 	importCommit string,
-) error {
+) (wroteSidecar bool, err error) {
 	config := component.GetConfig()
 	calc := config.Changelog.Calculation
 
@@ -50,7 +54,7 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 	// wrong V-Rs in the materialized changelog.
 	if config.Release.Calculation == projectconfig.ReleaseCalculationManual &&
 		calc != projectconfig.ChangelogCalculationManual {
-		return fmt.Errorf(
+		return false, fmt.Errorf(
 			"component %#q has 'release.calculation = \"manual\"' but "+
 				"'changelog.calculation' is %#q; rpmautospec cannot generate correct "+
 				"changelog entries without %%autorelease. Set "+
@@ -63,13 +67,13 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 		slog.Debug("Component uses manual changelog calculation; skipping",
 			"component", component.GetName())
 
-		return nil
+		return false, nil
 
 	case projectconfig.ChangelogCalculationAutochangelog:
 		slog.Debug("Component uses autochangelog calculation; skipping",
 			"component", component.GetName())
 
-		return nil
+		return false, nil
 
 	case projectconfig.ChangelogCalculationStatic:
 		return p.materializeStaticChangelog(component, sourcesDirPath, importCommit, true)
@@ -78,7 +82,7 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 		return p.materializeStaticChangelog(component, sourcesDirPath, importCommit, false)
 
 	default:
-		return fmt.Errorf("component %#q has unknown changelog calculation mode %#q",
+		return false, fmt.Errorf("component %#q has unknown changelog calculation mode %#q",
 			component.GetName(), calc)
 	}
 }
@@ -86,6 +90,9 @@ func (p *sourcePreparerImpl) tryMaterializeStaticChangelog(
 // materializeStaticChangelog reads the spec, captures the static '%changelog'
 // body, writes it to a sidecar 'changelog' file next to the spec, and
 // rewrites the spec's body to a single '%autochangelog' line.
+//
+// Returns (true, nil) when a sidecar was written; (false, nil) when the
+// function skipped (spec uses %autochangelog or has no %changelog section).
 //
 // The sidecar content is taken from the import-commit's spec body when
 // available (so it represents only pre-import entries). Falls back to
@@ -95,15 +102,15 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 	sourcesDirPath string,
 	importCommit string,
 	requireStatic bool,
-) error {
+) (bool, error) {
 	specPath, err := p.resolveSpecPath(component, sourcesDirPath)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	specFile, err := openSpecFromFS(p.fs, specPath)
 	if err != nil {
-		return fmt.Errorf("failed to read spec for component %#q:\n%w",
+		return false, fmt.Errorf("failed to read spec for component %#q:\n%w",
 			component.GetName(), err)
 	}
 
@@ -112,7 +119,7 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 	switch {
 	case errors.Is(err, spec.ErrSectionNotFound):
 		if requireStatic {
-			return fmt.Errorf(
+			return false, fmt.Errorf(
 				"component %#q has 'changelog.calculation = \"static\"' but its spec has no %%changelog section",
 				component.GetName())
 		}
@@ -120,16 +127,16 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 		slog.Debug("Spec has no %%changelog section; skipping static changelog materialization",
 			"component", component.GetName())
 
-		return nil
+		return false, nil
 
 	case err != nil:
-		return fmt.Errorf("failed to extract %%changelog body for component %#q:\n%w",
+		return false, fmt.Errorf("failed to extract %%changelog body for component %#q:\n%w",
 			component.GetName(), err)
 	}
 
 	if changelogBodyUsesAutochangelog(body) {
 		if requireStatic {
-			return fmt.Errorf(
+			return false, fmt.Errorf(
 				"component %#q has 'changelog.calculation = \"static\"' but its %%changelog body "+
 					"uses %%autochangelog; set 'changelog.calculation = \"autochangelog\"' instead",
 				component.GetName())
@@ -138,29 +145,29 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 		slog.Debug("Spec uses %%autochangelog; skipping static changelog materialization",
 			"component", component.GetName())
 
-		return nil
+		return false, nil
 	}
 
 	sidecarBody, sidecarSource, pickErr := pickSidecarBody(sourcesDirPath, importCommit, filepath.Base(specPath), body)
 	if pickErr != nil {
-		return fmt.Errorf("failed to determine sidecar body for component %#q:\n%w",
+		return false, fmt.Errorf("failed to determine sidecar body for component %#q:\n%w",
 			component.GetName(), pickErr)
 	}
 
 	sidecarPath := filepath.Join(filepath.Dir(specPath), ChangelogSidecarFilename)
 	if err := writeChangelogSidecar(p.fs, sidecarPath, sidecarBody); err != nil {
-		return fmt.Errorf(
+		return false, fmt.Errorf(
 			"failed to write %#q sidecar for component %#q:\n%w",
 			ChangelogSidecarFilename, component.GetName(), err)
 	}
 
 	if err := ReplaceChangelogBodyWithAutochangelog(specFile); err != nil {
-		return fmt.Errorf("failed to replace %%changelog body with %%autochangelog for component %#q:\n%w",
+		return false, fmt.Errorf("failed to replace %%changelog body with %%autochangelog for component %#q:\n%w",
 			component.GetName(), err)
 	}
 
 	if err := writeSpecToFS(p.fs, specPath, specFile); err != nil {
-		return fmt.Errorf("failed to write rewritten spec for component %#q:\n%w",
+		return false, fmt.Errorf("failed to write rewritten spec for component %#q:\n%w",
 			component.GetName(), err)
 	}
 
@@ -170,7 +177,7 @@ func (p *sourcePreparerImpl) materializeStaticChangelog(
 		"sidecarSource", sidecarSource,
 		"sidecar", sidecarPath)
 
-	return nil
+	return true, nil
 }
 
 // pickSidecarBody chooses the changelog body to write into the sidecar.
