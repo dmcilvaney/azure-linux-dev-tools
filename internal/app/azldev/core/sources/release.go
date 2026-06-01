@@ -28,7 +28,7 @@ var autoreleasePattern = regexp.MustCompile(`%(\{[?]?autorelease($|[}\s])|autore
 // auto-bump: a bare integer (e.g. "1") or an integer followed by a
 // dist macro (e.g. "5%{?dist}" or "5%{dist}"). Any other suffix — dotted
 // segments, unknown macros, etc. — is rejected so the component must use
-// 'release.calculation = "manual"'.
+// 'autospec.release-calculation = "manual"'.
 var staticReleasePattern = regexp.MustCompile(`^(\d+)(%\{\??dist\})?$`)
 
 // GetReleaseTagValue reads the Release tag value from the spec file at specPath.
@@ -104,7 +104,7 @@ func (p *sourcePreparerImpl) tryBumpStaticRelease(
 	sourcesDirPath string,
 	commitCount int,
 ) error {
-	calc := component.GetConfig().Release.Calculation
+	calc := component.GetConfig().Autospec.ReleaseCalculation
 
 	switch calc {
 	case projectconfig.ReleaseCalculationManual:
@@ -133,7 +133,7 @@ func (p *sourcePreparerImpl) tryBumpStaticRelease(
 
 // readAndBumpRelease reads the Release tag from the spec and bumps its static integer.
 // When requireStaticRelease is true (explicit static mode), encountering %autorelease
-// produces an error telling the user to switch to 'release.calculation = "autorelease"'.
+// produces an error telling the user to switch to 'autospec.release-calculation = "autorelease"'.
 // When false (auto mode), specs using %autorelease are silently skipped.
 func (p *sourcePreparerImpl) readAndBumpRelease(
 	component components.Component,
@@ -155,8 +155,8 @@ func (p *sourcePreparerImpl) readAndBumpRelease(
 	if ReleaseUsesAutorelease(releaseValue) {
 		if requireStaticRelease {
 			return fmt.Errorf(
-				"component %#q has 'release.calculation = \"static\"' but its Release tag "+
-					"uses %%autorelease; set 'release.calculation = \"autorelease\"' instead",
+				"component %#q has 'autospec.release-calculation = \"static\"' but its Release tag "+
+					"uses %%autorelease; set 'autospec.release-calculation = \"autorelease\"' instead",
 				component.GetName())
 		}
 
@@ -170,7 +170,7 @@ func (p *sourcePreparerImpl) readAndBumpRelease(
 	if err != nil {
 		return fmt.Errorf(
 			"component %#q has a non-standard Release tag value %#q that cannot be auto-bumped; "+
-				"set 'release.calculation = \"manual\"' in the component configuration "+
+				"set 'autospec.release-calculation = \"manual\"' in the component configuration "+
 				"and add a \"spec-set-tag\" overlay for the Release tag if needed:\n%w",
 			component.GetName(), releaseValue, err)
 	}

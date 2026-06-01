@@ -216,31 +216,31 @@ func TestReleaseCalculationValidation(t *testing.T) {
 	validate := validator.New()
 
 	// Empty (omitted) is valid — resolved to "auto" by the component resolver.
-	require.NoError(t, validate.Struct(&projectconfig.ReleaseConfig{}))
+	require.NoError(t, validate.Struct(&projectconfig.AutospecConfig{}))
 
 	// Explicit "auto" is valid.
-	require.NoError(t, validate.Struct(&projectconfig.ReleaseConfig{
-		Calculation: projectconfig.ReleaseCalculationAuto,
+	require.NoError(t, validate.Struct(&projectconfig.AutospecConfig{
+		ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
 	}))
 
 	// Explicit "manual" is valid.
-	require.NoError(t, validate.Struct(&projectconfig.ReleaseConfig{
-		Calculation: projectconfig.ReleaseCalculationManual,
+	require.NoError(t, validate.Struct(&projectconfig.AutospecConfig{
+		ReleaseCalculation: projectconfig.ReleaseCalculationManual,
 	}))
 
 	// Explicit "autorelease" is valid.
-	require.NoError(t, validate.Struct(&projectconfig.ReleaseConfig{
-		Calculation: projectconfig.ReleaseCalculationAutorelease,
+	require.NoError(t, validate.Struct(&projectconfig.AutospecConfig{
+		ReleaseCalculation: projectconfig.ReleaseCalculationAutorelease,
 	}))
 
 	// Explicit "static" is valid.
-	require.NoError(t, validate.Struct(&projectconfig.ReleaseConfig{
-		Calculation: projectconfig.ReleaseCalculationStatic,
+	require.NoError(t, validate.Struct(&projectconfig.AutospecConfig{
+		ReleaseCalculation: projectconfig.ReleaseCalculationStatic,
 	}))
 
 	// Invalid value is rejected.
-	require.Error(t, validate.Struct(&projectconfig.ReleaseConfig{
-		Calculation: "manaul",
+	require.Error(t, validate.Struct(&projectconfig.AutospecConfig{
+		ReleaseCalculation: "manaul",
 	}))
 }
 

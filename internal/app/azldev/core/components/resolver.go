@@ -493,8 +493,8 @@ func (r *Resolver) createComponentFromConfig(componentConfig *projectconfig.Comp
 			componentConfig.Name, err)
 	}
 
-	if componentConfig.Release.Calculation == "" {
-		componentConfig.Release.Calculation = projectconfig.ReleaseCalculationAuto
+	if componentConfig.Autospec.ReleaseCalculation == "" {
+		componentConfig.Autospec.ReleaseCalculation = projectconfig.ReleaseCalculationAuto
 	}
 
 	// Populate locked state onto the component config. This makes lock data

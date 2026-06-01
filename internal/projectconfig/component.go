@@ -171,10 +171,14 @@ const (
 	ReleaseCalculationManual ReleaseCalculation = "manual"
 )
 
-// ReleaseConfig holds release-related configuration for a component.
-type ReleaseConfig struct {
-	// Calculation controls how the Release tag is managed during rendering.
-	Calculation ReleaseCalculation `toml:"calculation,omitempty" json:"calculation,omitempty" validate:"omitempty,oneof=auto autorelease static manual" jsonschema:"enum=auto,enum=autorelease,enum=static,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
+// AutospecConfig holds the rpmautospec-related configuration for a component:
+// how the Release tag and %changelog block are managed during rendering, plus
+// the knobs that control synthetic dist-git history. Grouping these together
+// keeps all of the autospec machinery in one place ([autospec]) rather than
+// scattering related settings across separate [release]/[changelog] blocks.
+type AutospecConfig struct {
+	// ReleaseCalculation controls how the Release tag is managed during rendering.
+	ReleaseCalculation ReleaseCalculation `toml:"release-calculation,omitempty" json:"releaseCalculation,omitempty" validate:"omitempty,oneof=auto autorelease static manual" jsonschema:"enum=auto,enum=autorelease,enum=static,enum=manual,default=auto,title=Release calculation,description=Controls how the Release tag is managed during rendering. Empty or omitted means auto."`
 }
 
 // FreshnessStatus indicates whether a component's current config matches
@@ -267,8 +271,9 @@ type ComponentConfig struct {
 	// Where to get its spec and adjacent files from.
 	Spec SpecSource `toml:"spec,omitempty" json:"spec,omitempty" jsonschema:"title=Spec,description=Identifies where to find the spec for this component"`
 
-	// Release configuration for this component.
-	Release ReleaseConfig `toml:"release,omitempty" json:"release,omitempty" table:"-" jsonschema:"title=Release configuration,description=Configuration for how the Release tag is managed during rendering."`
+	// Autospec configuration for this component (Release/%changelog handling and
+	// synthetic history knobs).
+	Autospec AutospecConfig `toml:"autospec,omitempty" json:"autospec,omitempty" table:"-" jsonschema:"title=Autospec configuration,description=Configuration for how the Release tag and %changelog block are managed during rendering."`
 
 	// Overlays to apply to sources after they've been acquired. May mutate the spec as well as sources.
 	Overlays []ComponentOverlay `toml:"overlays,omitempty" json:"overlays,omitempty" table:"-" jsonschema:"title=Overlays,description=Overlays to apply to this component's spec and/or sources"`
@@ -376,7 +381,7 @@ func (c *ComponentConfig) WithAbsolutePaths(referenceDir string) *ComponentConfi
 		SourceConfigFile: c.SourceConfigFile,
 		RenderedSpecDir:  c.RenderedSpecDir,
 		Locked:           deep.MustCopy(c.Locked),
-		Release:          c.Release,
+		Autospec:         c.Autospec,
 		Spec:             deep.MustCopy(c.Spec),
 		Build:            deep.MustCopy(c.Build),
 		Render:           c.Render,

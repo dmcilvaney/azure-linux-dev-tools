@@ -3,6 +3,24 @@
   "$id": "https://github.com/microsoft/azure-linux-dev-tools/internal/projectconfig/config-file",
   "$ref": "#/$defs/ConfigFile",
   "$defs": {
+    "AutospecConfig": {
+      "properties": {
+        "release-calculation": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "autorelease",
+            "static",
+            "manual"
+          ],
+          "title": "Release calculation",
+          "description": "Controls how the Release tag is managed during rendering. Empty or omitted means auto.",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "CheckConfig": {
       "properties": {
         "skip": {
@@ -106,10 +124,10 @@
           "title": "Spec",
           "description": "Identifies where to find the spec for this component"
         },
-        "release": {
-          "$ref": "#/$defs/ReleaseConfig",
-          "title": "Release configuration",
-          "description": "Configuration for how the Release tag is managed during rendering."
+        "autospec": {
+          "$ref": "#/$defs/AutospecConfig",
+          "title": "Autospec configuration",
+          "description": "Configuration for how the Release tag and %changelog block are managed during rendering."
         },
         "overlays": {
           "items": {
@@ -823,24 +841,6 @@
           ],
           "title": "Install mode",
           "description": "How to install Python dependencies: pyproject, requirements, or none (default)"
-        }
-      },
-      "additionalProperties": false,
-      "type": "object"
-    },
-    "ReleaseConfig": {
-      "properties": {
-        "calculation": {
-          "type": "string",
-          "enum": [
-            "auto",
-            "autorelease",
-            "static",
-            "manual"
-          ],
-          "title": "Release calculation",
-          "description": "Controls how the Release tag is managed during rendering. Empty or omitted means auto.",
-          "default": "auto"
         }
       },
       "additionalProperties": false,

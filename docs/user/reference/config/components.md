@@ -9,7 +9,7 @@ A component definition tells azldev where to find the spec file, how to customiz
 | Field | TOML Key | Type | Required | Description |
 |-------|----------|------|----------|-------------|
 | Spec source | `spec` | [SpecSource](#spec-source) | No | Where to find the spec file for this component. Inherited from distro defaults if not specified. |
-| Release config | `release` | [ReleaseConfig](#release-configuration) | No | Controls how the Release tag is managed during rendering |
+| Autospec config | `autospec` | [AutospecConfig](#autospec-configuration) | No | Controls how the Release tag and %changelog block are managed during rendering |
 | Overlays | `overlays` | array of [Overlay](overlays.md) | No | Modifications to apply to the spec and/or source files |
 | Build config | `build` | [BuildConfig](#build-configuration) | No | Build-time options (macros, conditionals, check config) |
 | Render config | `render` | [RenderConfig](#render-configuration) | No | Options controlling spec rendering behavior |
@@ -98,15 +98,15 @@ spec = { type = "local", path = "azurelinux-release.spec" }
 
 The `path` is relative to the config file that defines the component. Local spec files and any associated source files should be placed alongside the component's `.comp.toml` file.
 
-## Release Configuration
+## Autospec Configuration
 
-The `[components.<name>.release]` section controls how azldev manages the Release tag during rendering.
+The `[components.<name>.autospec]` section controls how azldev manages the Release tag during rendering (and, in later sections, the %changelog block and synthetic history).
 
 | Field | TOML Key | Type | Required | Description |
 |-------|----------|------|----------|-------------|
-| Calculation | `calculation` | string | No | One of `"auto"` (default), `"autorelease"`, `"static"`, or `"manual"` |
+| Release calculation | `release-calculation` | string | No | One of `"auto"` (default), `"autorelease"`, `"static"`, or `"manual"` |
 
-### Calculation Modes
+### Release Calculation Modes
 
 | Mode | Behavior |
 |------|----------|
@@ -119,12 +119,12 @@ Most components use `auto` (the default) and need no release configuration. Exam
 
 ```toml
 # Spec with conditional %autorelease that auto-detection gets wrong:
-[components.gvisor-tap-vsock.release]
-calculation = "autorelease"
+[components.gvisor-tap-vsock.autospec]
+release-calculation = "autorelease"
 
 # Component that manages its own release numbering:
-[components.kernel.release]
-calculation = "manual"
+[components.kernel.autospec]
+release-calculation = "manual"
 ```
 
 ## Render Configuration

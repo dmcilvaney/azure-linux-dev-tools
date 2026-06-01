@@ -53,8 +53,8 @@ func TestTryBumpStaticRelease_ManualSkips(t *testing.T) {
 	preparer := newTestPreparer(memFS)
 
 	comp := mockComponent(ctrl, "kernel", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationManual,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationManual,
 		},
 	})
 
@@ -71,8 +71,8 @@ func TestTryBumpStaticRelease_AutoreleaseSkips(t *testing.T) {
 	writeTestSpec(t, memFS, "test-pkg", "%autorelease")
 
 	comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationAuto,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
 		},
 	})
 
@@ -88,8 +88,8 @@ func TestTryBumpStaticRelease_StaticBumps(t *testing.T) {
 	writeTestSpec(t, memFS, "test-pkg", "1%{?dist}")
 
 	comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationAuto,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
 		},
 	})
 
@@ -111,8 +111,8 @@ func TestTryBumpStaticRelease_StaticBumpsNonConditionalDist(t *testing.T) {
 	writeTestSpec(t, memFS, "test-pkg", "1%{dist}")
 
 	comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationAuto,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
 		},
 	})
 
@@ -133,15 +133,15 @@ func TestTryBumpStaticRelease_NonStandardErrorsWithoutManual(t *testing.T) {
 	writeTestSpec(t, memFS, "kernel", "%{pkg_release}")
 
 	comp := mockComponent(ctrl, "kernel", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationAuto,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationAuto,
 		},
 	})
 
 	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "kernel"), 3)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be auto-bumped")
-	assert.Contains(t, err.Error(), "release.calculation")
+	assert.Contains(t, err.Error(), "autospec.release-calculation")
 }
 
 func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
@@ -152,8 +152,8 @@ func TestTryBumpStaticRelease_NonStandardSucceedsWithManual(t *testing.T) {
 	writeTestSpec(t, memFS, "kernel", "%{pkg_release}")
 
 	comp := mockComponent(ctrl, "kernel", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationManual,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationManual,
 		},
 	})
 
@@ -168,8 +168,8 @@ func TestTryBumpStaticRelease_ExplicitAutoreleaseSkips(t *testing.T) {
 
 	// Spec has a static release, but config says autorelease — should skip.
 	comp := mockComponent(ctrl, "gvisor", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationAutorelease,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationAutorelease,
 		},
 	})
 
@@ -186,8 +186,8 @@ func TestTryBumpStaticRelease_ExplicitStaticBumps(t *testing.T) {
 	writeTestSpec(t, memFS, "test-pkg", "1%{?dist}")
 
 	comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationStatic,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationStatic,
 		},
 	})
 
@@ -210,12 +210,12 @@ func TestTryBumpStaticRelease_ExplicitStaticErrorsOnAutorelease(t *testing.T) {
 	writeTestSpec(t, memFS, "test-pkg", "%autorelease")
 
 	comp := mockComponent(ctrl, "test-pkg", &projectconfig.ComponentConfig{
-		Release: projectconfig.ReleaseConfig{
-			Calculation: projectconfig.ReleaseCalculationStatic,
+		Autospec: projectconfig.AutospecConfig{
+			ReleaseCalculation: projectconfig.ReleaseCalculationStatic,
 		},
 	})
 
 	err := preparer.tryBumpStaticRelease(comp, filepath.Join(testSourcesDir, "test-pkg"), 3)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `release.calculation = "autorelease"`)
+	assert.Contains(t, err.Error(), `autospec.release-calculation = "autorelease"`)
 }

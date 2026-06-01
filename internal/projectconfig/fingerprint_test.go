@@ -32,7 +32,7 @@ func TestAllFingerprintedFieldsHaveDecision(t *testing.T) {
 		reflect.TypeFor[projectconfig.SpecSource](),
 		reflect.TypeFor[projectconfig.DistroReference](),
 		reflect.TypeFor[projectconfig.SourceFileReference](),
-		reflect.TypeFor[projectconfig.ReleaseConfig](),
+		reflect.TypeFor[projectconfig.AutospecConfig](),
 		reflect.TypeFor[projectconfig.ComponentRenderConfig](),
 	}
 
