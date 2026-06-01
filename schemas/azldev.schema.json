@@ -864,6 +864,18 @@
           "title": "Release calculation",
           "description": "Controls how the Release tag is managed during rendering. Empty or omitted means auto.",
           "default": "auto"
+        },
+        "truncate-upstream-history": {
+          "type": "boolean",
+          "title": "Truncate upstream history",
+          "description": "Cut the seed commit's upstream parent chain so rpmautospec walks only synthetic commits. Workaround for packages where rpmautospec hangs walking full upstream history (e.g. kernel).",
+          "default": false
+        },
+        "replay-historical-overlays": {
+          "type": "boolean",
+          "title": "Replay historical overlays",
+          "description": "Re-apply each synthetic commit's resolved overlays to its spec tree (best-effort) so changelog history attributes the overlay-driven version to the correct commit. Opt in for overlay-versioned autorelease packages.",
+          "default": false
         }
       },
       "additionalProperties": false,

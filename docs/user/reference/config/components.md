@@ -106,6 +106,8 @@ The `[components.<name>.release]` section controls how azldev manages the Releas
 | Field | TOML Key | Type | Required | Description |
 |-------|----------|------|----------|-------------|
 | Calculation | `calculation` | string | No | One of `"auto"` (default), `"autorelease"`, `"static"`, or `"manual"` |
+| Truncate upstream history | `truncate-upstream-history` | boolean | No | Cut the seed commit's upstream parent chain so rpmautospec walks only synthetic commits. Workaround for packages where rpmautospec hangs walking full upstream history (e.g. kernel). Defaults to `false`. |
+| Replay historical overlays | `replay-historical-overlays` | boolean | No | Re-apply each synthetic commit's resolved overlays to its spec tree (best-effort) so changelog history attributes the overlay-driven version to the correct commit. Defaults to `false`. |
 
 ### Calculation Modes
 
