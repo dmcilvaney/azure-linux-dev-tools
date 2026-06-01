@@ -502,10 +502,10 @@ func (p *sourcePreparerImpl) trySyntheticHistory(
 	// already-customized spec drops author-specified args and triggers
 	// rpmautospec to walk the entire upstream history (which can hang on
 	// AZL's rpmautospec 0.8.3 when the spec uses %rpmversion).
-	replaceRelease := config.Release.Calculation != projectconfig.ReleaseCalculationManual &&
-		config.Release.Calculation != projectconfig.ReleaseCalculationAutorelease
-	replaceChangelog := config.Changelog.Calculation != projectconfig.ChangelogCalculationManual &&
-		config.Changelog.Calculation != projectconfig.ChangelogCalculationAutochangelog
+	replaceRelease := config.Autospec.ReleaseCalculation != projectconfig.ReleaseCalculationManual &&
+		config.Autospec.ReleaseCalculation != projectconfig.ReleaseCalculationAutorelease
+	replaceChangelog := config.Autospec.ChangelogCalculation != projectconfig.ChangelogCalculationManual &&
+		config.Autospec.ChangelogCalculation != projectconfig.ChangelogCalculationAutochangelog
 
 	if err := CommitInterleavedHistory(
 		sourcesRepo, changes, importCommit, bumps, replaceRelease, replaceChangelog,
