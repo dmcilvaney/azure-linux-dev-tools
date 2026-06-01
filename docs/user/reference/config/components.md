@@ -105,6 +105,7 @@ The `[components.<name>.autospec]` section controls how azldev manages the Relea
 | Field | TOML Key | Type | Required | Description |
 |-------|----------|------|----------|-------------|
 | Release calculation | `release-calculation` | string | No | One of `"auto"` (default), `"autorelease"`, `"static"`, or `"manual"` |
+| Changelog calculation | `changelog-calculation` | string | No | One of `"auto"` (default), `"autochangelog"`, `"static"`, or `"manual"` |
 
 ### Release Calculation Modes
 
@@ -114,6 +115,15 @@ The `[components.<name>.autospec]` section controls how azldev manages the Relea
 | `autorelease` | Explicitly declares the spec uses `%autorelease`. Skips all Release manipulation. Use this for specs with conditional `%autorelease`/`%else` fallbacks that confuse auto-detection. |
 | `static` | Explicitly declares the spec uses a static integer release. Bumps it by the synthetic commit count only when the Release tag is an integer, optionally followed by `%{?dist}` or `%{dist}`. Non-integer or other non-standard Release values (for example, `%{pkg_release}`) require `manual` or an overlay. |
 | `manual` | Skips all automatic Release manipulation. Use for components that manage their own release numbering (e.g. kernel). |
+
+### Changelog Calculation Modes
+
+| Mode | Behavior |
+|------|----------|
+| `auto` | Auto-detects from the spec's %changelog body. If `%autochangelog` is found, rpmautospec handles it. If static entries are found, they are materialized into a sidecar file and the spec body is rewritten to `%autochangelog`. |
+| `autochangelog` | Explicitly declares the spec uses `%autochangelog`. Skips all %changelog manipulation. |
+| `static` | Explicitly declares the spec uses a static %changelog. Materializes the existing entries into a sidecar file; errors if the spec already uses `%autochangelog` or has no %changelog section. |
+| `manual` | Skips all automatic %changelog manipulation. Requires `release-calculation = "manual"`, since rpmautospec cannot generate a correct changelog without managing the release. |
 
 Most components use `auto` (the default) and need no release configuration. Examples:
 

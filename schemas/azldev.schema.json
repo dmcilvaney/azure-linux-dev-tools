@@ -16,6 +16,18 @@
           "title": "Release calculation",
           "description": "Controls how the Release tag is managed during rendering. Empty or omitted means auto.",
           "default": "auto"
+        },
+        "changelog-calculation": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "autochangelog",
+            "static",
+            "manual"
+          ],
+          "title": "Changelog calculation",
+          "description": "Controls how the %changelog block is materialized during rendering. Empty or omitted means auto.",
+          "default": "auto"
         }
       },
       "additionalProperties": false,
