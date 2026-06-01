@@ -40,6 +40,13 @@ type FingerprintChange struct {
 	// UpstreamCommit is the upstream dist-git commit hash recorded in the lock
 	// file at the time the fingerprint changed.
 	UpstreamCommit string
+
+	// Overlays holds the component's resolved spec-modifying overlays as they
+	// existed at this commit, used for best-effort historical overlay replay
+	// (opt-in via AutospecConfig.ReplayHistoricalOverlays). Nil when replay is
+	// disabled or the historic config could not be loaded — in which case the
+	// commit's spec tree is replayed unchanged.
+	Overlays []projectconfig.ComponentOverlay
 }
 
 // interleavedEntry represents a single commit in the rebuilt dist-git history.
@@ -442,6 +449,12 @@ func replayEntry(
 		}
 
 		inputTree = parentCommit.TreeHash
+
+		// Best-effort historical overlay replay: re-apply the overlays this
+		// commit's config resolved to, so the spec tree carries the version it
+		// actually had at this point in history. Populated only when the
+		// component opts in; nil/empty leaves the tree untouched.
+		inputTree = applyHistoricSpecOverlays(repo, inputTree, entry.syntheticChange.Overlays)
 	}
 
 	synthTree, materializeErr := contract.Materialize(repo, inputTree)
@@ -845,7 +858,61 @@ func buildSyntheticCommits(
 		return nil, "", nil
 	}
 
+	// Opt-in: resolve each commit's overlays so historical spec trees can be
+	// replayed with the version they actually carried at that point in time.
+	if config.Autospec.ReplayHistoricalOverlays {
+		slog.Info("Replaying historical overlays")
+		populateHistoricOverlays(projectRepo, projectRepoDir, config, componentName, fpChanges)
+	}
+
 	return fpChanges, importCommit, nil
+}
+
+// populateHistoricOverlays fills in [FingerprintChange.Overlays] for each
+// real-commit change by loading the project config as of that commit and
+// resolving the component's spec-modifying overlays. It is best-effort: any
+// change whose historic config cannot be loaded (or whose hash is synthetic,
+// e.g. the "dirty" entry) is left with nil overlays so its spec tree replays
+// unchanged. Mutates the changes slice in place.
+func populateHistoricOverlays(
+	projectRepo *gogit.Repository,
+	projectRepoDir string,
+	config *projectconfig.ComponentConfig,
+	componentName string,
+	changes []FingerprintChange,
+) {
+	// Reference dir within the commit tree: the directory holding the
+	// component's config file, relative to the repository root, so the loader
+	// can discover the project root (azldev.toml) by walking upward.
+	referenceDir := "/"
+
+	if config.SourceConfigFile != nil && config.SourceConfigFile.SourcePath() != "" {
+		if rel, err := filepath.Rel(projectRepoDir, filepath.Dir(config.SourceConfigFile.SourcePath())); err == nil {
+			referenceDir = filepath.ToSlash(rel)
+		}
+	}
+
+	for idx := range changes {
+		hashStr := changes[idx].Hash
+
+		commitHash := plumbing.NewHash(hashStr)
+		if commitHash.IsZero() {
+			// Synthetic entry (e.g. "dirty") with no real tree; skip.
+			continue
+		}
+
+		overlays, err := projectconfig.ResolveComponentOverlaysAtCommit(
+			projectRepo, commitHash, referenceDir, componentName, true, /*permissive*/
+		)
+		if err != nil {
+			slog.Debug("Skipping historical overlay resolution for commit",
+				"component", componentName, "commit", hashStr, "error", err)
+
+			continue
+		}
+
+		changes[idx].Overlays = overlays
+	}
 }
 
 // BuildDirtyChange returns a [FingerprintChange] representing uncommitted

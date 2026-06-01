@@ -107,6 +107,7 @@ The `[components.<name>.autospec]` section controls how azldev manages the Relea
 | Release calculation | `release-calculation` | string | No | One of `"auto"` (default), `"autorelease"`, `"static"`, or `"manual"` |
 | Changelog calculation | `changelog-calculation` | string | No | One of `"auto"` (default), `"autochangelog"`, `"static"`, or `"manual"` |
 | Truncate upstream history | `truncate-upstream-history` | bool | No | When `true`, the synthetic-history seed becomes a ROOT commit so rpmautospec walks only azldev's synthetic chain instead of the full upstream history. Defaults to `false`. Opt-in workaround for packages where rpmautospec hangs walking deep upstream history (e.g. kernel). |
+| Replay historical overlays | `replay-historical-overlays` | bool | No | Re-apply each synthetic commit's resolved overlays to its spec tree (best-effort) so changelog history attributes the overlay-driven version to the correct commit. Defaults to `false`. Opt in for overlay-versioned autorelease packages. |
 
 ### Release Calculation Modes
 

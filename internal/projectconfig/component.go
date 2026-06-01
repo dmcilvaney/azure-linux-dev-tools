@@ -195,6 +195,19 @@ type AutospecConfig struct {
 	// synthetic commits only. Use bumps in the lock file to compensate so
 	// the rendered release stays monotonically increasing.
 	TruncateUpstreamHistory bool `toml:"truncate-upstream-history,omitempty" json:"truncateUpstreamHistory,omitempty" jsonschema:"default=false,title=Truncate upstream history,description=Cut the seed commit's upstream parent chain so rpmautospec walks only synthetic commits. Workaround for packages where rpmautospec hangs walking full upstream history (e.g. kernel)."`
+
+	// ReplayHistoricalOverlays makes synthetic dist-git history attribute the
+	// correct, overlay-driven package version to each commit. For every
+	// synthetic commit, azldev loads the project config as it existed at that
+	// commit and re-applies the component's resolved overlays to that commit's
+	// spec tree before evaluating it.
+	//
+	// This is best-effort: if an overlay does not apply cleanly at a given
+	// point in history, that commit's files are left as-is and the next commit
+	// is attempted. Opt in only for packages whose version is set via overlays
+	// (e.g. upstream autorelease packages where the version lives in a
+	// %define), so that release numbering is attributed to the right commit.
+	ReplayHistoricalOverlays bool `toml:"replay-historical-overlays,omitempty" json:"replayHistoricalOverlays,omitempty" jsonschema:"default=false,title=Replay historical overlays,description=Re-apply each synthetic commit's resolved overlays to its spec tree (best-effort) so changelog history attributes the overlay-driven version to the correct commit. Opt in for overlay-versioned autorelease packages."`
 }
 
 // ChangelogCalculation controls how the %changelog block is materialized during rendering.
