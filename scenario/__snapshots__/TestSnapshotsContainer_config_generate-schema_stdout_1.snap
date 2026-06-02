@@ -28,6 +28,12 @@
           "title": "Changelog calculation",
           "description": "Controls how the %changelog block is materialized during rendering. Empty or omitted means auto.",
           "default": "auto"
+        },
+        "truncate-upstream-history": {
+          "type": "boolean",
+          "title": "Truncate upstream history",
+          "description": "Cut the seed commit's upstream parent chain so rpmautospec walks only synthetic commits. Workaround for packages where rpmautospec hangs walking full upstream history (e.g. kernel).",
+          "default": false
         }
       },
       "additionalProperties": false,
