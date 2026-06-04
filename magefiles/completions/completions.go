@@ -18,7 +18,7 @@ import (
 var ErrCompletion = errors.New("error installing completions")
 
 // InstallCompletions installs bash completions for mage to the user's personal completions directory.
-func InstallCompletions() error {
+func InstallCompletions() (err error) {
 	mageutil.MagePrintln(mageutil.MsgStart, "Installing bash completions for mage")
 
 	// Packages should install completions to /usr/share/bash-completion/completions, but since this is a user operation
@@ -47,7 +47,12 @@ func InstallCompletions() error {
 	if err != nil {
 		return mageutil.PrintAndReturnError("could not open bash completion file", mageutil.ErrFile, err)
 	}
-	defer fOut.Close()
+	// fOut is writable, so a failed Close may indicate data loss; surface it via the named return.
+	defer func() {
+		if closeErr := fOut.Close(); closeErr != nil && err == nil {
+			err = mageutil.PrintAndReturnError("could not close bash completion file", mageutil.ErrFile, closeErr)
+		}
+	}()
 
 	fIn, err := os.Open(inputPath)
 	if err != nil {
@@ -70,25 +75,27 @@ func InstallCompletions() error {
 // readCompletionAndFindMageSection reads the file at filePath and returns all lines. It finds the start and end
 // markers' indices (including the markers). If neither marker is found, it returns the original lines and '-1' for
 // both start and end. If the markers are misaligned, it returns an error.
-func readCompletionAndFindMageSection(filePath, start, end string) ([]string, int, int, error) {
+func readCompletionAndFindMageSection(filePath, start, end string) (lines []string, startLine, endLine int, err error) {
 	// Read the file into memory.
 	fIn, err := os.OpenFile(filePath, os.O_RDWR, os.ModePerm)
 	if err != nil {
 		return nil, -1, -1, fmt.Errorf("could not open file: %w", err)
 	}
-	defer fIn.Close()
+	// fIn is opened read-write, so a failed Close may indicate data loss; surface it via the named return.
+	defer func() {
+		if closeErr := fIn.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("could not close file: %w", closeErr)
+		}
+	}()
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, -1, -1, fmt.Errorf("could not read file: %w", err)
 	}
 
-	lines := strings.Split(string(data), "\n")
+	lines = strings.Split(string(data), "\n")
 
-	var (
-		startLine, endLine   int
-		foundStart, foundEnd bool
-	)
+	var foundStart, foundEnd bool
 
 	for lineNum, line := range lines {
 		if strings.Contains(line, start) {
