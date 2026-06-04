@@ -75,27 +75,20 @@ func InstallCompletions() (err error) {
 // readCompletionAndFindMageSection reads the file at filePath and returns all lines. It finds the start and end
 // markers' indices (including the markers). If neither marker is found, it returns the original lines and '-1' for
 // both start and end. If the markers are misaligned, it returns an error.
-func readCompletionAndFindMageSection(filePath, start, end string) (lines []string, startLine, endLine int, err error) {
-	// Read the file into memory.
-	fIn, err := os.OpenFile(filePath, os.O_RDWR, os.ModePerm)
-	if err != nil {
-		return nil, -1, -1, fmt.Errorf("could not open file: %w", err)
-	}
-	// fIn is opened read-write, so a failed Close may indicate data loss; surface it via the named return.
-	defer func() {
-		if closeErr := fIn.Close(); closeErr != nil && err == nil {
-			err = fmt.Errorf("could not close file: %w", closeErr)
-		}
-	}()
-
+func readCompletionAndFindMageSection(filePath, start, end string) ([]string, int, int, error) {
+	// Read the file into memory. The file is only read here; the caller rewrites it atomically via renameio, so no
+	// writable handle is needed.
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, -1, -1, fmt.Errorf("could not read file: %w", err)
 	}
 
-	lines = strings.Split(string(data), "\n")
+	lines := strings.Split(string(data), "\n")
 
-	var foundStart, foundEnd bool
+	var (
+		startLine, endLine   int
+		foundStart, foundEnd bool
+	)
 
 	for lineNum, line := range lines {
 		if strings.Contains(line, start) {
