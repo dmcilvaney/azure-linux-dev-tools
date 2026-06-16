@@ -1,0 +1,10 @@
+# Phase Reports - schema-version-parts
+
+Phase completion reports are written here by `phase-into-result` when each phase
+finishes. Expected files (created at completion, not in advance):
+
+- `report-phase1.md` - Phase 1 (PR A1): canonical encoder + tag parser
+- `report-phase2.md` - Phase 2 (PR A2): hand-written projectV1 + golden vectors
+- `report-phase3.md` - Phase 3 (PR B): reset cutover
+
+See `plan/schema-version-parts/overview.md` for status.
