@@ -32,7 +32,11 @@ jobs:
         uses: ./.github/getgotools
 
       - name: Create release tag from changelog
-        run: mage release
+        run: |
+          # Annotated tags (git tag -a) need a committer identity, which the runner lacks.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mage release
 
       - name: Push release tag if new
         env:
