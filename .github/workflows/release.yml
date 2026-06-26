@@ -52,7 +52,7 @@ jobs:
             echo "no '## [X.Y.Z]' heading found in CHANGELOG.md" >&2
             exit 1
           fi
-          tag="bogus-v${version}" # TESTING ONLY: revert to "v${version}" before merging this branch.
+          tag="v${version}"
 
           # Push the tag if the remote lacks it. Tag push is kept separate from publishing the
           # release so a rerun can finish a half-done release that pushed the tag but never
