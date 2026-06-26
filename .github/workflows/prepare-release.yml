@@ -54,22 +54,49 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
+
+          # Nothing to release: `mage changelog` left CHANGELOG.md unchanged (no new entries since
+          # the last release). Report it in the job summary and stop -- this is not a failure.
+          if git diff --quiet -- CHANGELOG.md; then
+            {
+              echo "### Nothing to release"
+              echo ""
+              echo "No new changelog entries since the last release, so no release branch was created."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Nothing to release: CHANGELOG.md is unchanged."
+            exit 0
+          fi
+
           version="$(sed -n 's/^## \[\([0-9.]*\)\].*/\1/p' CHANGELOG.md | head -1)"
           if [ -z "$version" ]; then
             echo "no '## [X.Y.Z]' heading found in CHANGELOG.md" >&2
             exit 1
           fi
           branch="release/v${version}"
+
+          # Refuse to clobber an existing release branch (e.g. a prior prepare-release run that
+          # has not been merged or cleaned up yet).
+          if git ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            echo "Release branch '${branch}' already exists on the remote; merge or delete it before preparing again." >&2
+            exit 1
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git add CHANGELOG.md
           git commit -m "chore: prepare release v${version}"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "$branch"
+
+          # Build the create-PR URL from the current server/repo so it points at this repo (fork or
+          # upstream). GitHub's pull/new/<branch> form targets the repo's default branch as the base.
+          pr_url="${SERVER_URL}/${REPO}/pull/new/${branch}"
           {
             echo "Pushed branch \`$branch\` with the v${version} changelog draft."
             echo ""
-            echo "Next: open a PR from \`$branch\`, curate the changelog into user-facing notes, and merge."
+            echo "**[Open the pull request →](${pr_url})**, curate the changelog into user-facing notes, then merge."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "Open a PR: ${pr_url}"
