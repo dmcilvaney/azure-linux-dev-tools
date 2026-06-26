@@ -87,9 +87,9 @@ pkg.go.dev fetch directly from this repository's Git tags:
    `https://pkg.go.dev/github.com/microsoft/azure-linux-dev-tools@v0.1.1` once to
    prompt the docs build.
 
-5. (Optional, recommended) Create a GitHub Release for the tag and paste the new
-   `CHANGELOG.md` section as the release notes. A GitHub Release is separate from
-   the Git tag, so you can add notes even to a tag that already exists.
+5. (Optional) Create a GitHub Release for the tag with that version's
+   `CHANGELOG.md` section as the notes. The CI release workflow does this
+   automatically; for a manual release, use `gh release create`.
 
 ## Changelog
 
@@ -133,9 +133,10 @@ there is no second code path:
   runs `mage changelog`, and pushes a `release/vX.Y.Z` branch. It does **not**
   open the PR — open it yourself from that branch, curate the draft, and merge.
 * [`release.yml`](../../../.github/workflows/release.yml) (on push to `main`):
-  runs `mage release` and pushes the tag. It is a no-op on ordinary merges
-  because the changelog's top version is already tagged; it only tags (and
-  publishes) when a release PR bumps the changelog to a new version.
+  runs `mage release`, pushes the tag, and publishes a GitHub Release whose notes
+  are that version's `CHANGELOG.md` section. It is a no-op on ordinary merges
+  because the changelog's top version is already tagged; it only releases when a
+  release PR bumps the changelog to a new version.
 
 Both push with the default `GITHUB_TOKEN` (`contents: write`) — no PAT needed.
 A tag pushed by `GITHUB_TOKEN` does not itself trigger further workflows, which
