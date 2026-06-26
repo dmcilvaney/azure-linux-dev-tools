@@ -76,7 +76,9 @@ pkg.go.dev fetch directly from this repository's Git tags:
    nothing, so the same command is safe to automate on every merge to `main`.
 
 4. Warm the proxy and pkg.go.dev so the new version is discoverable promptly.
-   This is harmless and only triggers indexing of an already-public tag:
+   The CI release workflow does this automatically (upstream only); the commands
+   below are for a manual release. It is harmless — it only triggers indexing of
+   an already-public tag:
 
    ```console
    GOPROXY=https://proxy.golang.org go list \
@@ -133,10 +135,11 @@ there is no second code path:
   runs `mage changelog`, and pushes a `release/vX.Y.Z` branch. It does **not**
   open the PR — open it yourself from that branch, curate the draft, and merge.
 * [`release.yml`](../../../.github/workflows/release.yml) (on push to `main`):
-  runs `mage release`, pushes the tag, and publishes a GitHub Release whose notes
-  are that version's `CHANGELOG.md` section. It is a no-op on ordinary merges
-  because the changelog's top version is already tagged; it only releases when a
-  release PR bumps the changelog to a new version.
+  runs `mage release`, pushes the tag, publishes a GitHub Release whose notes are
+  that version's `CHANGELOG.md` section, and (on the upstream repo) warms the
+  module proxy and pkg.go.dev. It is a no-op on ordinary merges because the
+  changelog's top version is already tagged; it only releases when a release PR
+  bumps the changelog to a new version.
 
 Both push with the default `GITHUB_TOKEN` (`contents: write`) — no PAT needed.
 A tag pushed by `GITHUB_TOKEN` does not itself trigger further workflows, which
