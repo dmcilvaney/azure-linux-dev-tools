@@ -5,6 +5,22 @@ This guide covers releasing the `azldev` Go module so that
 
 ## TL;DR
 
+Releases run through CI — the recommended path, with nothing to install
+locally:
+
+1. Trigger the [**Prepare release** workflow][prepare-release-run]
+   (**Run workflow** → `main`). It drafts the next changelog section and pushes
+   a `release/vX.Y.Z` branch.
+2. Wait ~30 seconds, the output summary of the workflow will generate a link to create the PR.
+3. On merge, the [**release** workflow][release-run] tags `vX.Y.Z`, publishes a
+   GitHub Release from the changelog, and warms the proxy + pkg.go.dev — no
+   further action needed.
+
+See [Automated releases (CI)](#automated-releases-ci) for what each workflow
+does.
+
+Local steps are:
+
 ```console
 # One-time: install the changelog generator (git-cliff)
 cargo binstall git-cliff         # or: cargo install git-cliff --locked, or: brew install git-cliff
@@ -21,7 +37,8 @@ git tag -d vX.Y.Z
 git push origin vX.Y.Z           # pushing the tag is what publishes the release
 ```
 
-Each step is explained in full under [Cut a release](#cut-a-release) below.
+Each manual step is explained in full under [Cut a release](#cut-a-release)
+below.
 
 ## Versioning policy
 
@@ -163,3 +180,5 @@ retract (
 [semver]: https://semver.org/
 [proxy]: https://proxy.golang.org/
 [retract]: https://go.dev/ref/mod#go-mod-file-retract
+[prepare-release-run]: https://github.com/microsoft/azure-linux-dev-tools/actions/workflows/prepare-release.yml
+[release-run]: https://github.com/microsoft/azure-linux-dev-tools/actions/workflows/release.yml
