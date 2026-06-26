@@ -6,7 +6,7 @@ name: "Release"
 # the changelog's top version is already tagged. See docs/developer/how-to/releasing.md.
 on:
   push:
-    branches: [main]
+    branches: [main, damcilva/changelog_workflows_testing] # TESTING ONLY: drop the testing branch before merging.
 
 # Don't run two releases at once.
 concurrency:
@@ -49,7 +49,7 @@ jobs:
             echo "no '## [X.Y.Z]' heading found in CHANGELOG.md" >&2
             exit 1
           fi
-          tag="v${version}"
+          tag="bogus-v${version}" # TESTING ONLY: revert to "v${version}" before merging this branch.
 
           # Push the tag if the remote lacks it. Tag push is kept separate from publishing the
           # release so a rerun can finish a half-done release that pushed the tag but never
