@@ -123,6 +123,24 @@ cargo binstall git-cliff   # or: cargo install git-cliff --locked, or: brew inst
 > Tip: the generated draft is a natural place to let Copilot help rewrite commit
 > subjects into concise, user-facing notes before you commit.
 
+## Automated releases (CI)
+
+Two workflows automate the manual steps above, reusing the same mage targets so
+there is no second code path:
+
+* [`prepare-release.yml`](../../../.github/workflows/prepare-release.yml)
+  (manual **Run workflow**): checks out `main`, installs the pinned git-cliff,
+  runs `mage changelog`, and pushes a `release/vX.Y.Z` branch. It does **not**
+  open the PR — open it yourself from that branch, curate the draft, and merge.
+* [`release.yml`](../../../.github/workflows/release.yml) (on push to `main`):
+  runs `mage release` and pushes the tag. It is a no-op on ordinary merges
+  because the changelog's top version is already tagged; it only tags (and
+  publishes) when a release PR bumps the changelog to a new version.
+
+Both push with the default `GITHUB_TOKEN` (`contents: write`) — no PAT needed.
+A tag pushed by `GITHUB_TOKEN` does not itself trigger further workflows, which
+only matters if a tag-triggered build is added later.
+
 ## Fixing a bad release
 
 Proxy versions are immutable — you cannot delete or move a published version.
