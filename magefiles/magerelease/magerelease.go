@@ -90,7 +90,9 @@ func Release() error {
 		return mageutil.PrintAndReturnError("Could not read the release version from CHANGELOG.md.", ErrRelease, err)
 	}
 
-	tag := "v" + version
+	// TESTING ONLY (revert before merging this branch): the `bogus-v` prefix keeps fork test runs of
+	// the release workflow from minting real-looking tags. Real releases use `tag := "v" + version`.
+	tag := "bogus-v" + version
 
 	exists, err := tagExists(tag)
 	if err != nil {
