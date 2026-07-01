@@ -11,66 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Generate Synthetic Git Repo (#17)
-- Add package publish channel annotations to TOML schema (#38)
-- Add `spec-remove-section` (#40)
-- Add GetCurrentCommit function and WithMetadataOnly option (#44)
-- Add `azldev package list` command (#53)
-- Add ResolveSourceIdentity() to the source provider interface (#45)
-- Add WithSkipLookaside preparer option (#61)
-- Static release bumped during dist-git generation (#54)
-- Add mock batch processor and source utilities (#80)
-- Place built RPMs/SRPMs into structured output dirs and validate channel names (#68)
-- Add azldev component render command (#81)
-- Added download-sources command (#67)
-- Include rendered spec location in component list output (#85)
-- Add fingerprint ignore tags to some config fields (#46)
-- Render files into subdirectories (#88)
-- Add lock file foundations (#90)
-- Add update CLI command (#92)
-- Add user hints to help fix errors (#95)
-- Rename publish channel field to publish-channel and PublishChannel (#96)
-- Add image capabilities, test suites, and publish config (#101)
-- Add advanced command hint to help output (#102)
-- Require components to opt out of auto release calculation (#100)
-- Add --synthesize-debug-packages to package list (#108)
-- Add ability to boot livecd-style ISO (#103)
-- Add lock file validation and orphan detection primitives
-- Skip file filter for specs with unexpandable macros
-- Add component-level publish channel configuration (#107)
-- Add deterministic component fingerprints (#47)
-- Add structural validation and feature-gated lock checks (#111)
-- Add pytest test suite support (#122)
-- Compute and store input fingerprints during component update (#123)
-- Populate resolved lock data onto components during resolution (#129)
-- Add --bump flag for manual rebuild counter (#130)
-- Extend lock files to cover local components (#133)
-- Construct dist-git with lock file history (#121)
-- Add spec-remove-subpackage overlay (#132)
-- Add ReadAllAtCommit for batch lock file reading (#150)
-- Add --rpm-file flag to package list command (#136)
-- Load user-level config from XDG config home (#148)
-- Add explicit release calculation modes (autorelease, static) (#155)
-- Add facility for upstream commit staleness detection (#154)
-- Add freshness-based skip optimization to component update (#158)
-- Add explicit document generation mage target (#153)
-- Add component changed command (#149)
-- Switch update cmd to use a progress bar (#159)
-- Add root user check escape hatch with env var (#163)
-- Add check-only option to update (#168)
-- Add check-only option to render (#170)
-- Add dirty commit for uncommitted config changes in dist-git (#166)
-- Enable full validation for configs and locks (#177)
-- Allow file replacement in `source-files` (#171)
-- Validate component group membership (#191)
-- Split list 'group' column into 'packageGroups' and 'componentGroups' (#165)
-- Add RPM repo resources and repo-set templates (#202)
-- Add flag to source prep to skip downloading source tars (#207)
-- Add 'azldev repo query' for inspecting and managing RPM repositories (#213)
-- Add deterministic archive extract and repack utility (#223)
-- Add gremlins mutation testing via mage and MCP (#244)
-- Add inline [metadata] block to component overlays
-- Add per-file overlay format via overlay-files
+- **Component lifecycle and reproducibility**
+  - Added lock file foundations and expanded them to include local components.
+  - Added deterministic component fingerprints, lock validation/orphan detection, and structural validation checks.
+  - Added `azldev component changed` and persisted input fingerprints during `component update`.
+  - Added freshness and upstream-commit staleness checks to optimize update behavior.
+- **Spec rendering, overlays, and source preparation**
+  - Added `azldev component render` plus check-only mode (`--check-only`) for render and update.
+  - Added new overlay capabilities: `spec-remove-section`, `spec-remove-subpackage`, `source-files` replacement, inline `[metadata]`, and per-file `overlay-files`.
+  - Added options for source preparation, including skipping lookaside/source tar downloads.
+  - Added deterministic archive extract/repack utilities.
+- **Build and release controls**
+  - Added explicit release calculation modes (`autorelease`, `static`) and improved static release handling.
+  - Added manual rebuild control via `--bump`.
+  - Added support for dirty commit metadata when config has uncommitted changes during dist-git generation.
+- **CLI surface expansion**
+  - Added `azldev package list` (with `--rpm-file` and `--synthesize-debug-packages`).
+  - Added `azldev repo query` plus RPM repo resources and repo-set templates.
+  - Added `download-sources` and richer `component list` output (rendered spec location, split package/component group columns).
+  - Added user-level config loading from XDG config home.
+- **Image and test tooling**
+  - Added image capabilities (including booting livecd-style ISOs), test suites, and publish config.
+  - Added pytest suite support.
+  - Added gremlins mutation testing integration via mage and MCP.
+- **Developer experience**
+  - Added progress bar output and actionable command/help hints.
+  - Added explicit docs generation mage target.
+  - Added an environment-variable escape hatch for root-user checks.
 
 ### Fixed
 
@@ -108,8 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filter noise from license checks (#230)
 - Surface close errors and drop unused writable handle in completions (#233)
 - Expand overlay files after config resolution
-- Fixup! chore(release): add release workflows
-- Fixup! Apply suggestions from code review
 
 ## [0.1.0] - 2026-03-18
 
