@@ -27,10 +27,24 @@ const (
 	vmBaseBuildTimeout      = 15 * time.Minute
 )
 
+type vmBaseFixture struct {
+	imagePath string
+	revision  string
+	sha256    string
+}
+
 func TestAzureLinuxVMBaseImageBuild(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping long test")
 	}
+
+	fixture := buildAzureLinuxVMBase(t)
+	t.Logf("Built Azure Linux vm-base revision %s with SHA-256 %s", fixture.revision, fixture.sha256)
+}
+
+func buildAzureLinuxVMBase(t *testing.T) vmBaseFixture {
+	t.Helper()
+
 	if os.Getenv(buildtestenv.TestingDisableNetworkTestsEnvVar) != "" {
 		t.Skip("skipping image build because network tests are disabled")
 	}
@@ -99,6 +113,12 @@ func TestAzureLinuxVMBaseImageBuild(t *testing.T) {
 		info.Size(),
 		sha,
 	)
+
+	return vmBaseFixture{
+		imagePath: imagePath,
+		revision:  revision,
+		sha256:    sha,
+	}
 }
 
 func runHostCommand(t *testing.T, directory string, program string, args ...string) {

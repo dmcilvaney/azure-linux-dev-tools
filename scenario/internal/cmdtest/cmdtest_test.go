@@ -214,10 +214,19 @@ func TestContainerImageOptions(t *testing.T) {
 	params := NewScenarioTest().
 		InContainer().
 		WithDockerfile("Dockerfile.image-builder").
-		WithTmpfs("/workdir/build", "rw,exec,mode=1777")
+		WithTmpfs("/workdir/build", "rw,exec,mode=1777").
+		WithInit().
+		WithDevice("/dev/kvm", "/dev/kvm", "rwm").
+		WithSupplementalGroup("123")
 
 	assert.Equal(t, "Dockerfile.image-builder", params.Dockerfile)
 	assert.Equal(t, map[string]string{"/workdir/build": "rw,exec,mode=1777"}, params.Tmpfs)
+	assert.True(t, params.Init)
+	require.Len(t, params.Devices, 1)
+	assert.Equal(t, "/dev/kvm", params.Devices[0].hostPath)
+	assert.Equal(t, "/dev/kvm", params.Devices[0].containerPath)
+	assert.Equal(t, "rwm", params.Devices[0].permissions)
+	assert.Equal(t, []string{"123"}, params.SupplementalGroups)
 }
 
 func Test_OverrideCommands(t *testing.T) {

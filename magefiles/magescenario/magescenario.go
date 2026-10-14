@@ -102,6 +102,35 @@ func E2EImage() error {
 	return nil
 }
 
+// E2ETMT runs only the temporarily quarantined virtual TMT regression.
+func E2ETMT() error {
+	startTime := time.Now()
+
+	mageutil.MagePrintln(mageutil.MsgStart, "Starting virtual TMT end-to-end test...")
+
+	err := runScenarioGoTest(scenarioGoTestOptions{
+		label:          "virtual TMT end-to-end",
+		buildTag:       "e2e",
+		timeout:        "45m",
+		packagePattern: "./scenario",
+		testSelector:   "^TestTMTVirtualProvisioning$",
+		additionalEnv: map[string]string{
+			"TESTING_ENABLE_TMT_VIRTUAL_E2E": "1",
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	mageutil.MagePrintf(
+		mageutil.MsgSuccess,
+		"Virtual TMT end-to-end test complete: %v.\n",
+		time.Since(startTime),
+	)
+
+	return nil
+}
+
 func mageScenarioCommon(doSnapshotUpdate bool) error {
 	options := scenarioGoTestOptions{
 		label:            "scenario",
@@ -142,6 +171,8 @@ type scenarioGoTestOptions struct {
 	// testSelector, when set, is passed to 'go test -run' to execute one
 	// focused test without running the rest of the selected tier.
 	testSelector string
+	// additionalEnv adds target-specific environment variables to the test process.
+	additionalEnv map[string]string
 }
 
 func runScenarioGoTest(options scenarioGoTestOptions) error {
@@ -159,6 +190,9 @@ func runScenarioGoTest(options scenarioGoTestOptions) error {
 	// mage knows the exact path to the azldev binary, ensure we use it.
 	env := map[string]string{
 		buildtestenv.TestingAzldevBinPathEnvVar: path.Join(mageutil.BinDir(), "azldev"),
+	}
+	for name, value := range options.additionalEnv {
+		env[name] = value
 	}
 
 	if options.doSnapshotUpdate {
