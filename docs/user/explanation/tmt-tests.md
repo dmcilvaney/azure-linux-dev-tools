@@ -143,6 +143,156 @@ The same technique works locally: `createrepo_c` the built RPMs, then
 (dnf accepts a local directory as the `--repofrompath` baseurl) resolves conflicts
 for you instead of a hand-rolled `--rpm` filter.
 
+## Structured reports and diagnostic files
+
+Use the ordinary output flag, without needing `--quiet`:
+
+```bash
+azldev component test example --provision virtual \
+  --image-path ./image.qcow2 --rpm ./example.rpm --plan /plans/smoke \
+  --work-dir ./test-artifacts -O json >manifest.json
+status=$?
+```
+
+Once validated setup starts, stdout contains **one JSON manifest**, including on
+failure; progress and subprocess diagnostics go to stderr. CLI/configuration/
+argument validation can fail before a manifest exists. A broken stdout pipe is
+a command failure. Other formats keep human-readable runner output.
+
+### Version 1 manifest
+
+The manifest describes files, not individual test results. A successful run has
+this shape (paths are illustrative; additional native files/logs are listed):
+
+```json
+{
+  "schemaVersion": 1,
+  "subject": {"type": "component", "name": "example"},
+  "status": "completed",
+  "artifactRoot": "/work/test-artifacts/azldev-test-123",
+  "logs": [{"kind": "setup", "path": "setup.log"}],
+  "invocations": [{
+    "name": "smoke",
+    "runner": "tmt",
+    "runnerVersion": "1.78.0",
+    "status": "completed",
+    "exitCode": 0,
+    "reports": [{
+      "format": "junit", "plan": "/plans/smoke",
+      "path": "invocations/001-smoke/junit-001.xml"
+    }],
+    "logs": [{
+      "kind": "test", "plan": "/plans/smoke", "test": "/tests/smoke",
+      "guest": {"name": "default-0"}, "serialNumber": 1,
+      "path": "invocations/001-smoke/native/plans/smoke/execute/data/smoke-1/output.txt"
+    }],
+    "nativeArtifacts": [{
+      "format": "tmt-results", "plan": "/plans/smoke",
+      "path": "invocations/001-smoke/native/plans/smoke/execute/results.yaml"
+    }],
+    "errors": []
+  }],
+  "errors": []
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `subject` | Selected component (`type`, `name`) |
+| `artifactRoot` | Absolute owned directory; absent for dry-run or if creation failed |
+| `status` | `completed`, `incomplete`, or `dry-run`; invocation entries can also be `not-run` |
+| `invocations` | Selected mapped entries in execution order, including entries left unattempted by fail-fast |
+| `runnerVersion` | Pinned TMT version, absent before the runner is invoked |
+| `exitCode` | Observed TMT process exit, never inferred from XML; absent before startup or on signal termination |
+| `reports` | Validated JUnit files, one per plan with persisted results |
+| `logs` | Explicit retained regular files: setup commands, runner stdout/stderr, native run log, test/check/subresult and phase logs |
+| `nativeArtifacts` | Native `tmt-run`, `tmt-step`, and `tmt-results` state files; the whole native run directory is also retained |
+| `errors` | Messages with a `stage` when known; unknown stages omit the field |
+
+Lists are arrays, including when empty; logs and native artifacts are sorted and
+deduplicated. Log associations include `plan`, `test`, `guest` (name/role), and
+`serialNumber` when available. Error stages identify setup, TMT lifecycle steps,
+reporting, or collection; a nonzero exit alone does not identify a stage.
+
+### Completion is not a verdict
+
+Lifecycle status comes from native step state, not pass counts. Pending results,
+incomplete steps, invalid evidence, capture errors, and report errors remain
+visible failures. Execution is sequential and fail-fast: later entries are
+`not-run`, without invented testcases or native skips.
+
+Examples of invocation fields (other fields are unchanged):
+
+```json
+{"status": "completed", "exitCode": 1,
+ "errors": [{"message": "TMT process exited with status 1"}]}
+```
+
+An assertion failure retains results despite exit **1**. A preparation failure:
+
+```json
+{"status": "incomplete", "exitCode": 2,
+ "errors": [
+   {"message": "TMT process exited with status 2"},
+   {"stage": "prepare", "message": "TMT plan preparation is not done"}
+ ]}
+```
+
+Pending records appear as JUnit errors; completed evidence is retained. Error
+messages above are abbreviated, not a stable API. Setup failures omit `exitCode`
+and leave invocations `not-run`. Root `status` is `incomplete` if any entry is
+incomplete or unattempted.
+
+azldev keeps its conventional aggregate exits: **0 on success, 1 on failure**.
+Native TMT exits such as all-skipped (4), no-results (3), fail/warn (1), and error
+(2) remain nonzero at the azldev boundary, with the original value in `exitCode`.
+No-results runs retain available native state but do not fabricate an empty
+successful JUnit report. `--dry-run -O json` reports `dry-run`, empty file lists,
+and no artifact root; it executes no commands and creates no artifacts.
+
+### Native JUnit projection
+
+azldev uses `tmt[report-junit]==1.78.0` in its isolated venv, plus
+`provision-virtual` for virtual runs, and forces YAML state regardless of
+`TMT_STATE_FORMAT`. After execution, **TMT's native JUnit exporter** reads
+persisted results into one report per plan without modifying FMF, rerunning
+steps, or replacing existing reporters. Partial runs can still produce reports.
+
+The template follows the default pinned exporter mapping:
+
+| Native outcome | JUnit representation |
+| --- | --- |
+| `pass` | Successful testcase |
+| `fail` | Failure |
+| `skip`, `info` | Skipped |
+| `error`, `warn`, `pending` | Error |
+
+**This is lossy:** `info` is a native soft pass. Native artifacts preserve checks,
+subresults, and richer evidence. JUnit identifies plan in `classname` and
+guest/serial in testcase `name`. Logs are separate files, not embedded.
+
+### Paths, retention, and cancellation
+
+Each execution gets a fresh `azldev-test-*` directory under `--work-dir`, excluding
+stale artifacts even when reusing the venv/work directory. Listed paths use `/`
+and are relative to `artifactRoot`: copy that entire directory and resolve paths
+against its new location. Native metadata is verbatim and may contain old absolute paths.
+
+Only regular files within the owned tree are listed. Missing logs, escaping
+paths, and symlinks (including intermediate directories) are collection errors:
+the reference is omitted, the invocation is incomplete, and the command exits
+nonzero. Other evidence and JUnit from valid results remain available.
+
+**Retention belongs to the caller.** Artifacts survive failures and consume disk
+space until removed. Logs may contain sensitive output, commands, or credentials;
+restrict access before sharing them.
+
+SIGINT/SIGTERM also cancels export: the manifest can retain persisted native
+results/logs with incomplete status and a reporting error but no JUnit.
+Unobserved exit codes are omitted. No final manifest after SIGKILL, recovery of
+unpersisted results, or guest teardown after forced termination is guaranteed.
+Local container tests do not validate the separately quarantined QEMU path.
+
 ## Where plans and tests can live
 
 Because `source` pins the **plan** and `discover` resolves the **tests**, the two

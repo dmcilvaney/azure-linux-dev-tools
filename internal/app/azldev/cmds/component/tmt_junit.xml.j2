@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+{# TMT's default projection, with plan/guest/serial identity and file-only logs. #}
+<testsuites tests="{{ RESULTS | length }}" errors="{{ RESULTS.errored | length }}" failures="{{ RESULTS.failed | length }}" time="{{ RESULTS.duration | float }}">
+  <testsuite name="{{ PLAN.name | e }}" tests="{{ RESULTS | length }}" errors="{{ RESULTS.errored | length }}" failures="{{ RESULTS.failed | length }}" skipped="{{ RESULTS.skipped | length }}" time="{{ RESULTS.duration | float }}">
+    {% for result in RESULTS %}
+    <testcase classname="{{ PLAN.name | e }}" name="{{ result.name | e }} [{{ result.guest.name | e }} #{{ result.serial_number }}]" time="{{ result.duration | duration_to_seconds | float }}">
+      {% if result.result.value in ('error', 'warn', 'pending') %}
+      <error type="error" message="{{ result.result.value | e }}"/>
+      {% elif result.result.value == 'fail' %}
+      <failure type="failure" message="fail"/>
+      {% elif result.result.value in ('skip', 'info') %}
+      <skipped type="skipped" message="{{ result.result.value | e }}"/>
+      {% endif %}
+    </testcase>
+    {% endfor %}
+  </testsuite>
+</testsuites>

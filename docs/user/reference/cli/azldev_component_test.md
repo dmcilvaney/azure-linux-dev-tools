@@ -2,7 +2,7 @@
 
 ## azldev component test
 
-Run a component's TMT tests in a local QEMU VM
+Run a component's TMT tests and retain reports and logs
 
 ### Synopsis
 
@@ -60,6 +60,18 @@ on the host; git is required for azldev's own catalog clone unless
 '--source-dir' is used, though the selected plan's 'discover' step may still
 invoke git itself regardless of '--source-dir'.
 
+REPORTS AND LOGS:
+  Each execution retains a fresh azldev-test-* artifact directory under --work-dir.
+  JUnit XML is exported using the pinned TMT version; native results and diagnostic
+  files remain available alongside it. Existing plan reporters are not replaced.
+  With -O json, stdout contains one versioned manifest, including on ordinary
+  setup or runner failures. Diagnostics go to stderr and retained log files;
+  --quiet is not required. File paths are relative to the manifest's artifactRoot.
+  A completed invocation can contain failed tests. Exit status remains nonzero
+  for test, infrastructure, reporting, or output failures.
+  Dry-run returns a manifest without creating artifacts or executing commands.
+  Retention and removal belong to the caller. Logs may contain sensitive output.
+
 ```
 azldev component test COMPONENT [flags]
 ```
@@ -90,7 +102,7 @@ azldev component test COMPONENT [flags]
   -r, --rpm strings         Local RPM to install before testing (required; may be repeated). Typically include the main package and -tests package.
       --source-dir string   Run tmt straight from this local fmf tree instead of cloning the catalog 'source'. Accepts the output of either 'azldev component render' (with 'render.skip-file-filter = true') or 'azldev component prepare-sources'. Local inner-loop convenience; not used by cloud (TEE) runs.
   -t, --test strings        Mapped TMT test name to run (may be repeated; defaults to all)
-      --work-dir string     Directory for cloned metadata and TMT artifacts (default: current directory)
+      --work-dir string     Parent for the reusable TMT venv and fresh retained test artifacts (default: current directory)
 ```
 
 ### Options inherited from parent commands

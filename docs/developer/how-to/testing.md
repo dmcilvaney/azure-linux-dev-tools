@@ -72,6 +72,32 @@ failure is fixed. The normal `mage e2e` suite compiles the test but skips it;
 temporary environment guard once the provisioning fixes land so the standard
 E2E job enforces the regression.
 
+### Local TMT reporting regression
+
+```bash
+mage e2e -target=tmt-local
+```
+
+Runs only `TestTMTLocalReporting`, using `Dockerfile.tmt`, its scriptlet-free probe
+RPM, and the current binary. The real `component test --provision local -O json`
+command runs in disposable AZL4 with separate source/work directories.
+
+Coverage includes RPM execution, declared dependencies, exact JUnit outcome
+counts, multiple plans, empty selection, prepare/finish/report failures, clean
+JSON stdout, retained logs, source preservation, and artifact relocation/reuse.
+SIGINT/SIGTERM sent to azldev after evidence is persisted must terminate within
+ten seconds, retaining native results/logs and reporting cancelled export without
+inventing an exit code. Child-only termination is tested separately.
+
+Safety boundary:
+
+- No host-local TMT, sudo, RPM or Python installation; packages install in-container.
+- No privileged mode, KVM/devices, host network, Docker socket, or home/repository mount.
+- Only dedicated fixtures/artifacts are shared. The harness removes the container;
+  artifacts under `out/tmt-local-e2e/` and image/build caches remain.
+- Containers share the host kernel: isolation is not absolute. Do not substitute
+  broad `mage e2e`, which can invoke the privileged image builder.
+
 ## Mutation Testing
 
 Mutation testing measures how good the tests actually are (as opposed to mere line coverage) by

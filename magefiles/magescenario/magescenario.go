@@ -21,9 +21,10 @@ import (
 var ErrScenario = errors.New("scenario test failed")
 
 const (
-	e2eTargetAll   = "all"
-	e2eTargetImage = "image"
-	e2eTargetTMT   = "tmt"
+	e2eTargetAll      = "all"
+	e2eTargetImage    = "image"
+	e2eTargetTMT      = "tmt"
+	e2eTargetTMTLocal = "tmt-local"
 )
 
 // Scenario runs the scenario tests.
@@ -50,7 +51,7 @@ func ScenarioUpdate() error {
 	return nil
 }
 
-// E2E runs one of: [all, image, tmt]. The default is all.
+// E2E runs one of: [all, image, tmt, tmt-local]. The default is all.
 // These tests are tagged with the `e2e` build tag
 // (separate from `scenario`) so that they do not run as part of `mage scenario`,
 // `mage scenarioUpdate`, or `mage all` — they are intentionally heavier
@@ -92,12 +93,19 @@ func E2E(target *string) error {
 		options.additionalEnv = map[string]string{
 			"TESTING_ENABLE_TMT_VIRTUAL_E2E": "1",
 		}
+	case e2eTargetTMTLocal:
+		options.label = "local TMT reporting end-to-end"
+		options.timeout = "25m"
+		options.testSelector = "^TestTMTLocalReporting$"
+		options.additionalEnv = map[string]string{
+			"TESTING_ENABLE_TMT_LOCAL_E2E": "1",
+		}
 	default:
 		return fmt.Errorf(
 			"%w: unknown end-to-end target %#q; available targets: %q",
 			ErrScenario,
 			selectedTarget,
-			[]string{e2eTargetAll, e2eTargetImage, e2eTargetTMT},
+			[]string{e2eTargetAll, e2eTargetImage, e2eTargetTMT, e2eTargetTMTLocal},
 		)
 	}
 
