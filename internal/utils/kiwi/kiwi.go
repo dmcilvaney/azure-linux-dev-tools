@@ -458,6 +458,12 @@ func CheckPrerequisites(ctx opctx.Ctx) error {
 
 	if err := prereqs.RequireExecutable(ctx, KiwiBinary, &prereqs.PackagePrereq{
 		FedoraPackages: []string{"kiwi-cli"},
+		Version: &prereqs.VersionRequirement{
+			// KIWI 11 replaced lists with mappings in runtime config.
+			// https://github.com/OSInside/kiwi/commit/ff9f584a6445f7267cfd84f2fda34abb5721be84
+			Constraint: "< 11.0.0-0",
+			Guidance:   "install KIWI 10.x; KIWI 11's runtime configuration format is not supported by this azldev release",
+		},
 	}); err != nil {
 		return fmt.Errorf("kiwi prerequisite check failed:\n%w", err)
 	}

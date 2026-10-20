@@ -8,6 +8,18 @@ This guide walks through building an Azure Linux image with `azldev`.
 - Built RPMs available in a local repository or remote package source
 - The `azldev` CLI installed and on your `PATH`
 
+Image builds currently reject KIWI 11.0.0 and newer, including KIWI 11 prereleases.
+KIWI 11 changed its runtime configuration format and is not supported by this
+azldev release. azldev checks `kiwi --version` before building and reports an
+actionable error for incompatible versions; it does not automatically downgrade
+or upgrade installed packages. Use a compatible KIWI 10.x package from your
+distribution or a build environment that provides it.
+
+Dependency version checks are opt-in in azldev's code and run only when the
+corresponding prerequisite is needed. Unrelated commands do not probe KIWI, and
+dry runs do not execute version probes. Requirements are owned by the azldev
+release, not by project TOML.
+
 ## List Available Images
 
 ```bash

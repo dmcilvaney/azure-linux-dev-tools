@@ -80,6 +80,15 @@ func TestSkillDocumentUnknown(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestImageSkillDependencyGuidance(t *testing.T) {
+	for _, withoutLockfile := range []bool{false, true} {
+		doc, err := agentskill.NewCatalog(withoutLockfile).SkillDocument("azldev-image", testParams())
+		require.NoError(t, err)
+		assert.Contains(t, doc, "Use KIWI 10.x")
+		assert.Contains(t, doc, "does not automatically change installed tool versions")
+	}
+}
+
 func TestOverlayMetadataSkillDocument(t *testing.T) {
 	params := testParams()
 	params.Bindings = agentskill.Bindings{RenderedSpecsDir: "build/specs"}

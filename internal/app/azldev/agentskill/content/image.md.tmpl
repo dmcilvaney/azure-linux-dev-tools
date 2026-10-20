@@ -10,6 +10,11 @@ azldev drives the build from a kiwi-ng definition; the `.kiwi` file itself is
 **upstream KIWI NG** ([docs](https://osinside.github.io/kiwi/)) and azldev does not
 own its schema.
 
+Use KIWI 10.x with this azldev release: KIWI 11 changed the runtime configuration
+format. Image builds check the installed KIWI version before starting and reject
+KIWI 11, including prereleases. Install a compatible package or use a compatible
+build environment; azldev does not automatically change installed tool versions.
+
 ## Commands
 
 Images are selected by their **name as a positional argument** (not `-p`).
