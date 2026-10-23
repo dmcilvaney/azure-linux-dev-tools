@@ -84,7 +84,7 @@ func TestImageSkillDependencyGuidance(t *testing.T) {
 	for _, withoutLockfile := range []bool{false, true} {
 		doc, err := agentskill.NewCatalog(withoutLockfile).SkillDocument("azldev-image", testParams())
 		require.NoError(t, err)
-		assert.Contains(t, doc, "Use KIWI 10.x")
+		assert.Contains(t, doc, "Use KIWI 11.0.0 or newer")
 		assert.Contains(t, doc, "does not automatically change installed tool versions")
 	}
 }

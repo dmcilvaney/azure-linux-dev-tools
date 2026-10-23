@@ -62,7 +62,7 @@ description: "Instructions for working on the azldev Go codebase. IMPORTANT: Alw
 
 ### External Dependency Requirements
 
-- Reuse `prereqs.RequireExecutable` for tool prerequisites. Opt into version checks with `PackagePrereq.Version`; use `prereqs.RequireVersion` directly when package installation is not applicable.
+- Reuse `prereqs.RequireExecutable` for tool prerequisites. Opt into version checks with a tool-owned `PackagePrereq.VersionCheck` callback, invoked after executable acquisition and skipped during dry runs. Keep probing and parsing in the tool's package.
 - Keep constraints in azldev code as minimal as possible. Only add version requirements when there are breaking changes or known incompatibilities.
 
 ### Return values

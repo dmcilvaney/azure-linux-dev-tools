@@ -23,8 +23,8 @@ type PackagePrereq struct {
 	AzureLinuxPackages []string
 	// List of Fedora distro packages that must be installed to provide this prerequisite.
 	FedoraPackages []string
-	// Optional version requirement checked after the executable is available.
-	Version *VersionRequirement
+	// Optional tool-owned check run after the executable is available, except during dry runs.
+	VersionCheck func(opctx.Ctx) error
 }
 
 const (
@@ -42,11 +42,11 @@ var ErrMissingExecutable = errors.New("executable missing, no auto-resolution")
 // Checks that the executable identified by `programName` is available in the host system. If it
 // can't be found but `prereq` is provided, then will attempt to auto-install the prerequisite,
 // dependent on the policy configured in `ctx`. If `programName` isn't present and can't be
-// auto-installed, returns an error. An optional [PackagePrereq.Version] also
+// auto-installed, returns an error. An optional [PackagePrereq.VersionCheck] also
 // checks the installed version; incompatible installations are never upgraded.
 func RequireExecutable(ctx opctx.Ctx, programName string, prereq *PackagePrereq) error {
 	if ctx.CommandInSearchPath(programName) {
-		return requirePackageVersion(ctx, programName, prereq)
+		return checkPackageVersion(ctx, prereq)
 	}
 
 	var autoInstall bool
@@ -71,15 +71,18 @@ func RequireExecutable(ctx opctx.Ctx, programName string, prereq *PackagePrereq)
 		return fmt.Errorf("required program '%s' still not found after installing known prerequisites", programName)
 	}
 
-	return requirePackageVersion(ctx, programName, prereq)
+	return checkPackageVersion(ctx, prereq)
 }
 
-func requirePackageVersion(ctx opctx.Ctx, programName string, prereq *PackagePrereq) error {
-	if prereq == nil || prereq.Version == nil {
+func checkPackageVersion(ctx opctx.Ctx, prereq *PackagePrereq) error {
+	if prereq == nil || prereq.VersionCheck == nil || ctx.DryRun() {
 		return nil
 	}
 
-	return RequireVersion(ctx, programName, *prereq.Version)
+	// Probe on each call rather than use a global sync.Once that caches
+	// failures/cancellation across contexts. Revisit with operation-scoped caching
+	// if repeated probes become a performance issue.
+	return prereq.VersionCheck(ctx)
 }
 
 // Installs the prerequisite on the host system.
@@ -109,7 +112,12 @@ func (p *PackagePrereq) Install(ctx opctx.Ctx) error {
 		return nil
 	}
 
-	err = cmd.Run()
+	wrapped, err := ctx.Command(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to prepare prerequisite installer '%s':\n%w", installer, err)
+	}
+
+	err = wrapped.Run(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to install prerequisite packages '%s' using '%s':\n%w", packageNames, installer, err)
 	}
