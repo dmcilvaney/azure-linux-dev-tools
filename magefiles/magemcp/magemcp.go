@@ -12,6 +12,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	// Exception to dev-tool isolation: share protocol-only heartbeats with azldev
+	// to keep timeout handling consistent, without depending on application code.
+	"github.com/microsoft/azure-linux-dev-tools/internal/utils/mcpprogress"
 )
 
 const (
@@ -38,6 +41,7 @@ func main() {
 		serverVersion,
 		server.WithToolCapabilities(true),
 		server.WithRecovery(),
+		server.WithToolHandlerMiddleware(mcpprogress.Middleware),
 		server.WithLogging(),
 	)
 
