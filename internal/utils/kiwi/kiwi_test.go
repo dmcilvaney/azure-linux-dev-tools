@@ -642,6 +642,22 @@ func TestCheckPrerequisitesVersion(t *testing.T) {
 		"unknown":            {output: "unreleased", wantErr: "could not extract KIWI version"},
 		"other tool":         {output: "Python 3.14.0", wantErr: "could not extract KIWI version"},
 		"malformed":          {output: "KIWI (next generation) version unknown", wantErr: "could not parse KIWI version"},
+		"sudo warning": {
+			output: "KIWI (next generation) version 11.1.3", stderr: "sudo: unable to resolve host builder",
+		},
+		"surrounding output": {
+			output: "notice\nKIWI (next generation) version 11.1.3\nanother notice",
+		},
+		"stderr banner with warning": {
+			stderr: "sudo: unable to resolve host builder\nKIWI (next generation) version 11.1.3\n",
+		},
+		"CRLF banner": {output: "notice\r\nKIWI (next generation) version 11.1.3\r\n"},
+		"embedded banner": {
+			output: "not KIWI (next generation) version 11.1.3", wantErr: "could not extract KIWI version",
+		},
+		"trailing banner text": {
+			output: "KIWI (next generation) version 11.1.3 unknown", wantErr: "could not extract KIWI version",
+		},
 		"failure": {
 			stderr: "broken installation", probeErr: probeErr, wantErr: "broken installation", wantProbeErr: true,
 		},
@@ -663,9 +679,9 @@ func TestCheckPrerequisitesVersion(t *testing.T) {
 			output:   "KIWI (next generation) version 11.1.3",
 			probeErr: context.Canceled, wantErr: "via sudo", wantProbeErr: true,
 		},
-		"version with failure diagnostics": {
+		"exit one with diagnostics": {
 			output: "KIWI (next generation) version 11.1.3", stderr: "initialization failed",
-			probeErr: versionProbeExitError(1), wantErr: "via sudo", wantProbeErr: true,
+			probeErr: versionProbeExitError(1),
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

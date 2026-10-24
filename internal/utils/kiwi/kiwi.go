@@ -455,7 +455,7 @@ func enhanceKiwiError(err error) error {
 	return fmt.Errorf("kiwi build failed:\n%w", err)
 }
 
-var kiwiVersionPattern = regexp.MustCompile(`^KIWI \(next generation\) version (\S+)$`)
+var kiwiVersionPattern = regexp.MustCompile(`(?m)^KIWI \(next generation\) version (\S+)[ \t]*\r?$`)
 
 func checkKiwiVersion(ctx opctx.Ctx) error {
 	const versionProbeTimeout = 10 * time.Second
